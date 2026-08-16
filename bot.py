@@ -7,27 +7,18 @@ import pandas as pd
 import ta
 import sys
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "EURUSD=X"
-TIMEZONE_LOCAL = ZoneInfo("America/Panama")  # UTC-5
+SYMBOL = "AUDCAD=X"
 
-print("--- INICIANDO SCRIPT EUR/USD 1M (CICLO DE 24 HORAS) ---", flush=True)
+print("--- INICIANDO SCRIPT AUD/CAD 1M (CORREGIDO) ---", flush=True)
 
+# Variable global para registrar la última vela procesada y evitar repeticiones
 LAST_CANDLE_TIMESTAMP = None
-ULTIMA_FECHA_RESUMEN = None
-
-# Acumuladores diarios
-contador_calls = 0
-contador_puts = 0
-precio_apertura_dia = None
-precio_actual = None
-
 session = requests.Session()
 session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
@@ -76,93 +67,64 @@ def get_market_data():
     except Exception as e:
         raise Exception(f"Error parseando datos de Yahoo: {e}")
 
-# ===== LÓGICA DE ANÁLISIS =====
+# ===== LÓGICA DE ANÁLISIS Y DETECCIÓN DE VELA =====
 def analyze():
-    global LAST_CANDLE_TIMESTAMP, ULTIMA_FECHA_RESUMEN
-    global contador_calls, contador_puts, precio_apertura_dia, precio_actual
-    
-    ahora_local = datetime.now(TIMEZONE_LOCAL)
-    fecha_hoy = ahora_local.strftime("%Y-%m-%d")
-
-    # 1. ENVIAR RESUMEN CADA 24 HORAS (A la medianoche 00:00)
-    if ULTIMA_FECHA_RESUMEN is not None and ULTIMA_FECHA_RESUMEN != fecha_hoy:
-        # Calcular balance general de las 24h
-        tendencia = "BULLISH (ALCISTA)" if (precio_actual or 0) >= (precio_apertura_dia or 0) else "BEARISH (BAJISTA)"
-        
-        mensaje_diario = (
-            "📈 <b>INFORME RESUMEN 24 HORAS DE MERCADO</b> 📉\n\n"
-            f"🔰 <b>ACTIVO:</b> EUR/USD\n"
-            f"📅 <b>FECHA CERRADA:</b> {ULTIMA_FECHA_RESUMEN}\n"
-            f"🟢 <b>SEÑALES CALL GENERADAS:</b> {contador_calls}\n"
-            f"🔴 <b>SEÑALES PUT GENERADAS:</b> {contador_puts}\n"
-            f"📊 <b>TENDENCIA GENERAL 24H:</b> {tendencia}\n\n"
-            "🔄 <b>REINICIANDO CICLO PARA LAS PRÓXIMAS 24 HORAS...</b>"
-        )
-        send_telegram(mensaje_diario)
-        
-        # Reiniciar contadores para las nuevas 24 horas
-        contador_calls = 0
-        contador_puts = 0
-        precio_apertura_dia = None
-
-    ULTIMA_FECHA_RESUMEN = fecha_hoy
-
+    global LAST_CANDLE_TIMESTAMP
     try:
         df = get_market_data()
         if len(df) < 15:
             return
 
+        # Tomamos el timestamp de la última vela cerrada (penúltima posición)
         latest_candle = df.iloc[-1]
         candle_time = latest_candle['timestamp']
         last_price = latest_candle['close']
-        precio_actual = last_price
 
-        # Guardar precio inicial de las 24 horas
-        if precio_apertura_dia is None:
-            precio_apertura_dia = last_price
-
+        # Si el timestamp es igual al anterior, la vela aún no ha cambiado -> ignorar
         if LAST_CANDLE_TIMESTAMP == candle_time:
             return
 
+        # Si llegamos aquí, ¡HAY NUEVA VELA!
         LAST_CANDLE_TIMESTAMP = candle_time
 
         # Cálculo de RSI
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         last_rsi = rsi_series.dropna().iloc[-1]
-        hora_actual = ahora_local.strftime("%H:%M:%S")
+        hora_actual = datetime.now().strftime("%H:%M:%S")
 
+        print(f"[{hora_actual}] Nueva vela 1m AUD/CAD | Precio: {last_price:.5f} | RSI: {last_rsi:.2f}", flush=True)
+
+        # Evaluamos si hay señal operativa
         direccion = "NEUTRAL"
         if last_rsi < 30:
             direccion = "🟢 CALL (COMPRA)"
-            contador_calls += 1
         elif last_rsi > 70:
             direccion = "🔴 PUT (VENTA)"
-            contador_puts += 1
 
-        print(f"[{hora_actual}] Vela 1m EUR/USD | Precio: {last_price:.5f} | RSI: {last_rsi:.2f} | {direccion}", flush=True)
-
-        # Solo notificar a Telegram si se genera una señal real de compra o venta
-        if direccion != "NEUTRAL":
-            mensaje = (
-                "⚠️ <b>SEÑAL DE MERCADO EN TIEMPO REAL</b>\n\n"
-                "🔰 <b>ACTIVO:</b> EUR/USD\n"
-                f"⏰ <b>HORA:</b> {hora_actual}\n"
-                f"📊 <b>PRECIO:</b> {last_price:.5f}\n"
-                f"📉 <b>RSI (14):</b> {last_rsi:.2f}\n"
-                f"🎯 <b>OPERACIÓN SUGERIDA:</b> {direccion}\n\n"
-                "🔥 <b>Bot de Monitoreo Activo</b> 🔥"
-            )
-            send_telegram(mensaje)
+        # Notificación enviada a Telegram por cada cambio de vela
+        mensaje = (
+            "📊 <b>NUEVA VELA DETECTADA (1M)</b>\n\n"
+            "🔰 <b>ACTIVO:</b> AUD/CAD\n"
+            f"⏰ <b>HORA:</b> {hora_actual}\n"
+            f"📊 <b>PRECIO:</b> {last_price:.5f}\n"
+            f"📉 <b>RSI (14):</b> {last_rsi:.2f}\n"
+            f"🎯 <b>ESTADO/SEÑAL:</b> {direccion}\n\n"
+            "🔥 <b>Bot de Monitoreo Activo</b> 🔥"
+        )
+        send_telegram(mensaje)
 
     except Exception as e:
         print(f"Error en análisis: {e}", flush=True)
 
 # ===== INICIALIZACIÓN =====
+# Servidor web en hilo secundario
 threading.Thread(target=run_health_server, daemon=True).start()
 
-send_telegram("🚀 <b>¡Bot en Render Iniciado!</b>\n<i>Monitoreando EUR/USD continuamente. Generará reporte y reiniciará cada 24h.</i>")
+# Mensaje de inicio SOLO UNA VEZ al arrancar el contenedor
+send_telegram("🚀 <b>¡Bot iniciado correctamente en Render!</b>\n<i>Monitoreando velas de 1m en AUD/CAD...</i>")
 
+# Bucle principal (Consulta cada 10 segundos sin saturar la red)
 while True:
     analyze()
     time.sleep(10)
-        
+    
