@@ -11,7 +11,6 @@ CHAT_ID = "544714195"
 SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
 
-# Servidor de salud para que Render no cierre el bot
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -56,17 +55,13 @@ def analyze():
     elif last_rsi > 70:
         send_telegram(f"🚨 VENTA BTCUSDT\nRSI en sobrecompra: {last_rsi:.2f}\nPrecio: ${last_price}")
 
-if __name__ == "__main__":
-    # Iniciar servidor en segundo plano para Render
-    threading.Thread(target=run_health_server, daemon=True).start()
-    
-    # Mensaje de prueba al arrancar
-    send_telegram("🚀 ¡Bot activo 24/7 en Render!")
-    
-    # Bucle principal
-    while True:
-        try:
-            analyze()
-        except Exception as e:
-            print(f"Error en bucle: {e}")
-        time.sleep(60)
+# Ejecución global para asegurar que arranque al cargar el script
+threading.Thread(target=run_health_server, daemon=True).start()
+send_telegram("🚀 ¡Bot activo 24/7 en Render!")
+
+while True:
+    try:
+        analyze()
+    except Exception as e:
+        print(f"Error en bucle: {e}")
+    time.sleep(60)
