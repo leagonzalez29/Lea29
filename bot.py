@@ -11,8 +11,6 @@ sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "BTCUSDT"
-INTERVAL = "15m"
 
 print("--- INICIANDO SCRIPT ---", flush=True)
 
@@ -39,33 +37,33 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error enviando mensaje: {e}", flush=True)
 
-def get_binance_data():
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=100"
+def get_market_data():
+    # Usamos Coinbase para evitar bloqueos regionales en Render
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=900"
+    headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get(url, headers=headers).json()
     
-    if isinstance(res, dict) and "code" in res:
-        raise Exception(f"Binance API error: {res}")
+    if not isinstance(res, list):
+        raise Exception(f"API Error: {res}")
 
-    df = pd.DataFrame(res)
-    df = df.iloc[:, :6]
-    df.columns = ['time', 'open', 'high', 'low', 'close', 'volume']
+    df = pd.DataFrame(res, columns=['time', 'low', 'high', 'open', 'close', 'volume'])
+    df = df.iloc[::-1].reset_index(drop=True) # Ordenar cronológicamente
     df['close'] = df['close'].astype(float)
     return df
 
 def analyze():
     try:
-        df = get_binance_data()
+        df = get_market_data()
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        last_rsi = rsi_series.iloc[-1]
+        last_rsi = rsi_series.dropna().iloc[-1]
         last_price = df['close'].iloc[-1]
         
-        print(f"BTC: ${last_price} | RSI: {last_rsi:.2f}", flush=True)
+        print(f"BTC: ${last_price:,.2f} | RSI: {last_rsi:.2f}", flush=True)
 
         if last_rsi < 30:
-            send_telegram(f"🚨 COMPRA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price}")
+            send_telegram(f"🚨 COMPRA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price:,.2f}")
         elif last_rsi > 70:
-            send_telegram(f"🚨 VENTA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price}")
+            send_telegram(f"🚨 VENTA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price:,.2f}")
     except Exception as e:
         print(f"Error en análisis: {e}", flush=True)
 
@@ -75,4 +73,3 @@ send_telegram("🚀 ¡Bot activo 24/7 en Render!")
 while True:
     analyze()
     time.sleep(60)
-time.sleep(60)
