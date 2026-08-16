@@ -11,8 +11,9 @@ sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
+SYMBOL = "AUDCAD=X"
 
-print("--- INICIANDO SCRIPT ---", flush=True)
+print("--- INICIANDO SCRIPT AUD/CAD 1M ---", flush=True)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -38,38 +39,43 @@ def send_telegram(message):
         print(f"Error enviando mensaje: {e}", flush=True)
 
 def get_market_data():
-    # Usamos Coinbase para evitar bloqueos regionales en Render
-    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=900"
+    # API de Yahoo Finance para AUD/CAD en intervalo de 1m
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
     headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get(url, headers=headers).json()
     
-    if not isinstance(res, list):
-        raise Exception(f"API Error: {res}")
-
-    df = pd.DataFrame(res, columns=['time', 'low', 'high', 'open', 'close', 'volume'])
-    df = df.iloc[::-1].reset_index(drop=True) # Ordenar cronológicamente
-    df['close'] = df['close'].astype(float)
-    return df
+    try:
+        quotes = res['chart']['result'][0]['indicators']['quote'][0]['close']
+        df = pd.DataFrame(quotes, columns=['close'])
+        df = df.dropna().reset_index(drop=True)
+        return df
+    except Exception as e:
+        raise Exception(f"Error parseando datos de Yahoo: {res}")
 
 def analyze():
     try:
         df = get_market_data()
+        if len(df) < 14:
+            print("Esperando más velas...", flush=True)
+            return
+
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         last_rsi = rsi_series.dropna().iloc[-1]
         last_price = df['close'].iloc[-1]
         
-        print(f"BTC: ${last_price:,.2f} | RSI: {last_rsi:.2f}", flush=True)
+        print(f"AUD/CAD: {last_price:.5f} | RSI (1m): {last_rsi:.2f}", flush=True)
 
         if last_rsi < 30:
-            send_telegram(f"🚨 COMPRA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price:,.2f}")
+            send_telegram(f"🚨 COMPRA AUD/CAD (1m)\nRSI: {last_rsi:.2f}\nPrecio: {last_price:.5f}")
         elif last_rsi > 70:
-            send_telegram(f"🚨 VENTA BTCUSDT\nRSI: {last_rsi:.2f}\nPrecio: ${last_price:,.2f}")
+            send_telegram(f"🚨 VENTA AUD/CAD (1m)\nRSI: {last_rsi:.2f}\nPrecio: {last_price:.5f}")
     except Exception as e:
         print(f"Error en análisis: {e}", flush=True)
 
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram("🚀 ¡Bot activo 24/7 en Render!")
+send_telegram("🚀 ¡Bot activo 24/7 en Render! (Mercado: AUD/CAD 1m)")
 
 while True:
     analyze()
     time.sleep(60)
+    
