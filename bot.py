@@ -5,7 +5,7 @@ import pandas_ta as ta
 
 # --- CONFIGURACIÓN CON TUS DATOS ---
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
-CHAT_ID = "544714195"
+CHAT_ID = (544714195)
 SIMBOLO = "BTCUSDT"     # Par a analizar (ej: BTCUSDT, ETHUSDT)
 TEMPORALIDAD = "15m"    # Temporalidad de las velas (1m, 5m, 15m, 1h)
 
