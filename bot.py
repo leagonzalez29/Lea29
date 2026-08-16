@@ -7,7 +7,6 @@ import pandas as pd
 import ta
 import sys
 
-# Forzar escritura inmediata en logs
 sys.stdout.reconfigure(line_buffering=True)
 
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
@@ -43,16 +42,20 @@ def send_telegram(message):
 def get_binance_data():
     url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=100"
     res = requests.get(url).json()
-    df = pd.DataFrame(res, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
-    df['close'] = df['close'].astype(float)
+    # Mapeo directo de columnas necesarias
+    df = pd.DataFrame(res)
+    df = df.iloc[:, :6]
+    df.columns = ['time', 'open', 'high', 'low', 'close', 'volume']
+    df['close'] = pd.to_numeric(df['close'])
     return df
 
 def analyze():
     try:
         df = get_binance_data()
-        df['rsi'] = ta.momentum.rsi(df['close'], window=14)
-        last_rsi = df['rsi'].iloc[-1]
+        rsi_series = ta.momentum.rsi(close=df['close'], window=14)
+        last_rsi = rsi_series.dropna().iloc[-1]
         last_price = df['close'].iloc[-1]
+        
         print(f"BTC: ${last_price} | RSI: {last_rsi:.2f}", flush=True)
 
         if last_rsi < 30:
@@ -62,8 +65,6 @@ def analyze():
     except Exception as e:
         print(f"Error en análisis: {e}", flush=True)
 
-# Arranque
-print("--- INICIANDO SERVIDOR WEB Y MENSAJE ---", flush=True)
 threading.Thread(target=run_health_server, daemon=True).start()
 send_telegram("🚀 ¡Bot activo 24/7 en Render!")
 
