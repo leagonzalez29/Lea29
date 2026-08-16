@@ -1,12 +1,26 @@
+import os
 import time
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import pandas as pd
 import ta
 
-TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs" # Pega aquí tu Token de BotFather
+TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
 SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot activo")
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -31,6 +45,7 @@ def analyze():
     print(f"BTC: ${last_close} | RSI: {last_rsi:.2f}")
 
 if __name__ == "__main__":
+    threading.Thread(target=run_health_server, daemon=True).start()
     send_telegram("🚀 ¡Bot activo 24/7 en Render!")
     while True:
         try:
