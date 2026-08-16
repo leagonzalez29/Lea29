@@ -7,6 +7,7 @@ import pandas as pd
 import ta
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -14,10 +15,10 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
 SYMBOL = "AUDCAD=X"
+TIMEZONE_LOCAL = ZoneInfo("America/Panama")  # Zona horaria local (UTC-5)
 
-print("--- INICIANDO SCRIPT AUD/CAD 1M (CORREGIDO) ---", flush=True)
+print("--- INICIANDO SCRIPT AUD/CAD 1M (FILTRO HORARIO 8:00 - 9:00 AM) ---", flush=True)
 
-# Variable global para registrar la última vela procesada y evitar repeticiones
 LAST_CANDLE_TIMESTAMP = None
 session = requests.Session()
 session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
@@ -70,38 +71,43 @@ def get_market_data():
 # ===== LÓGICA DE ANÁLISIS Y DETECCIÓN DE VELA =====
 def analyze():
     global LAST_CANDLE_TIMESTAMP
+    
+    # 1. VALIDACIÓN DE HORARIO (8:00 AM a 8:59:59 AM)
+    ahora_local = datetime.now(TIMEZONE_LOCAL)
+    if ahora_local.hour != 8:
+        # Fuera de la ventana de 8 a 9 AM no procesa datos ni manda alertas
+        return
+
     try:
         df = get_market_data()
         if len(df) < 15:
             return
 
-        # Tomamos el timestamp de la última vela cerrada (penúltima posición)
+        # Tomamos el timestamp de la última vela cerrada
         latest_candle = df.iloc[-1]
         candle_time = latest_candle['timestamp']
         last_price = latest_candle['close']
 
-        # Si el timestamp es igual al anterior, la vela aún no ha cambiado -> ignorar
+        # Evitamos repetir alertas sobre la misma vela
         if LAST_CANDLE_TIMESTAMP == candle_time:
             return
 
-        # Si llegamos aquí, ¡HAY NUEVA VELA!
         LAST_CANDLE_TIMESTAMP = candle_time
 
         # Cálculo de RSI
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         last_rsi = rsi_series.dropna().iloc[-1]
-        hora_actual = datetime.now().strftime("%H:%M:%S")
+        hora_actual = ahora_local.strftime("%H:%M:%S")
 
         print(f"[{hora_actual}] Nueva vela 1m AUD/CAD | Precio: {last_price:.5f} | RSI: {last_rsi:.2f}", flush=True)
 
-        # Evaluamos si hay señal operativa
+        # Evaluamos señal operativa
         direccion = "NEUTRAL"
         if last_rsi < 30:
             direccion = "🟢 CALL (COMPRA)"
         elif last_rsi > 70:
             direccion = "🔴 PUT (VENTA)"
 
-        # Notificación enviada a Telegram por cada cambio de vela
         mensaje = (
             "📊 <b>NUEVA VELA DETECTADA (1M)</b>\n\n"
             "🔰 <b>ACTIVO:</b> AUD/CAD\n"
@@ -109,7 +115,7 @@ def analyze():
             f"📊 <b>PRECIO:</b> {last_price:.5f}\n"
             f"📉 <b>RSI (14):</b> {last_rsi:.2f}\n"
             f"🎯 <b>ESTADO/SEÑAL:</b> {direccion}\n\n"
-            "🔥 <b>Bot de Monitoreo Activo</b> 🔥"
+            "🔥 <b>Bot de Monitoreo (8 AM - 9 AM)</b> 🔥"
         )
         send_telegram(mensaje)
 
@@ -117,13 +123,11 @@ def analyze():
         print(f"Error en análisis: {e}", flush=True)
 
 # ===== INICIALIZACIÓN =====
-# Servidor web en hilo secundario
 threading.Thread(target=run_health_server, daemon=True).start()
 
-# Mensaje de inicio SOLO UNA VEZ al arrancar el contenedor
-send_telegram("🚀 <b>¡Bot iniciado correctamente en Render!</b>\n<i>Monitoreando velas de 1m en AUD/CAD...</i>")
+send_telegram("🚀 <b>¡Bot iniciado en Render!</b>\n<i>Programado para operar de 8:00 AM a 9:00 AM...</i>")
 
-# Bucle principal (Consulta cada 10 segundos sin saturar la red)
 while True:
     analyze()
     time.sleep(10)
+    
