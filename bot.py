@@ -40,20 +40,24 @@ def send_telegram(message):
         print(f"Error enviando mensaje: {e}", flush=True)
 
 def get_binance_data():
+    headers = {'User-Agent': 'Mozilla/5.0'}
     url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit=100"
-    res = requests.get(url).json()
-    # Mapeo directo de columnas necesarias
+    res = requests.get(url, headers=headers).json()
+    
+    if isinstance(res, dict) and "code" in res:
+        raise Exception(f"Binance API error: {res}")
+
     df = pd.DataFrame(res)
     df = df.iloc[:, :6]
     df.columns = ['time', 'open', 'high', 'low', 'close', 'volume']
-    df['close'] = pd.to_numeric(df['close'])
+    df['close'] = df['close'].astype(float)
     return df
 
 def analyze():
     try:
         df = get_binance_data()
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        last_rsi = rsi_series.dropna().iloc[-1]
+        last_rsi = rsi_series.iloc[-1]
         last_price = df['close'].iloc[-1]
         
         print(f"BTC: ${last_price} | RSI: {last_rsi:.2f}", flush=True)
@@ -71,3 +75,4 @@ send_telegram("🚀 ¡Bot activo 24/7 en Render!")
 while True:
     analyze()
     time.sleep(60)
+time.sleep(60)
