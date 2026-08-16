@@ -6,6 +6,7 @@ import requests
 import pandas as pd
 import ta
 import sys
+from datetime import datetime
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -13,7 +14,7 @@ TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
 SYMBOL = "AUDCAD=X"
 
-print("--- INICIANDO SCRIPT AUD/CAD 1M ---", flush=True)
+print("--- INICIANDO SCRIPT AUD/CAD 1M (CON FORMATO) ---", flush=True)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -31,7 +32,11 @@ def run_health_server():
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
     try:
         res = requests.post(url, data=payload)
         print(f"Respuesta de Telegram: {res.text}", flush=True)
@@ -39,7 +44,6 @@ def send_telegram(message):
         print(f"Error enviando mensaje: {e}", flush=True)
 
 def get_market_data():
-    # API de Yahoo Finance para AUD/CAD en intervalo de 1m
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
     headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get(url, headers=headers).json()
@@ -56,24 +60,48 @@ def analyze():
     try:
         df = get_market_data()
         if len(df) < 14:
-            print("Esperando más velas...", flush=True)
             return
 
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         last_rsi = rsi_series.dropna().iloc[-1]
         last_price = df['close'].iloc[-1]
-        
-        print(f"AUD/CAD: {last_price:.5f} | RSI (1m): {last_rsi:.2f}", flush=True)
+        hora_actual = datetime.now().strftime("%H:%M:%S")
+
+        print(f"AUD/CAD: {last_price:.5f} | RSI: {last_rsi:.2f}", flush=True)
 
         if last_rsi < 30:
-            send_telegram(f"🚨 COMPRA AUD/CAD (1m)\nRSI: {last_rsi:.2f}\nPrecio: {last_price:.5f}")
+            mensaje = (
+                "⚠️ <b>ATENCIÓN, HA LLEGADO UNA SEÑAL</b>\n\n"
+                "🔰 <b>ACTIVO:</b> AUD/CAD\n"
+                "⏰ <b>TIEMPO:</b> 1 MINUTO\n\n"
+                "<b>HORA DE ENTRADA</b>\n"
+                f"📑 {hora_actual}\n"
+                f"🟢 <b>DIRECCIÓN:</b> CALL (COMPRA)\n"
+                f"📊 <b>PRECIO:</b> {last_price:.5f}\n"
+                f"📉 <b>RSI:</b> {last_rsi:.2f}\n\n"
+                "🔥 <b>BUENA SUERTE A TODOS</b> 🔥"
+            )
+            send_telegram(mensaje)
+
         elif last_rsi > 70:
-            send_telegram(f"🚨 VENTA AUD/CAD (1m)\nRSI: {last_rsi:.2f}\nPrecio: {last_price:.5f}")
+            mensaje = (
+                "⚠️ <b>ATENCIÓN, HA LLEGADO UNA SEÑAL</b>\n\n"
+                "🔰 <b>ACTIVO:</b> AUD/CAD\n"
+                "⏰ <b>TIEMPO:</b> 1 MINUTO\n\n"
+                "<b>HORA DE ENTRADA</b>\n"
+                f"📑 {hora_actual}\n"
+                f"🔴 <b>DIRECCIÓN:</b> PUT (VENTA)\n"
+                f"📊 <b>PRECIO:</b> {last_price:.5f}\n"
+                f"📈 <b>RSI:</b> {last_rsi:.2f}\n\n"
+                "🔥 <b>BUENA SUERTE A TODOS</b> 🔥"
+            )
+            send_telegram(mensaje)
+
     except Exception as e:
         print(f"Error en análisis: {e}", flush=True)
 
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram("🚀 ¡Bot activo 24/7 en Render! (Mercado: AUD/CAD 1m)")
+send_telegram("🚀 <b>¡Bot activo 24/7 en Render!</b>\n<i>Mercado: AUD/CAD (1m)</i>")
 
 while True:
     analyze()
