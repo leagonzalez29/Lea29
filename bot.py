@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TU_TOKEN_AQUI")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL = "EURGBP=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
@@ -46,16 +46,14 @@ def run_health_server():
 
 # ===== FUNCIÓN TELEGRAM =====
 def send_telegram(message):
-    if TELEGRAM_TOKEN == "TU_TOKEN_AQUI":
-        print("⚠️ Advertencia: TELEGRAM_TOKEN no configurado correctamente.", flush=True)
-        return
-        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         res = session.post(url, data=payload, timeout=10)
         if res.status_code != 200:
             print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
+        else:
+            print(f"Mensaje enviado con éxito a Telegram.", flush=True)
     except Exception as e:
         print(f"Error Telegram Exception: {e}", flush=True)
 
@@ -125,7 +123,7 @@ def analyze():
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            # Criterios simétricos (RSI < 40 para alta vs RSI > 60 para baja)
+            # Criterios simétricos (RSI <= 40 para alta vs RSI >= 60 para baja)
             prediccion_alta = (rsi_actual <= 40) or (stoch_actual <= 30)
             prediccion_baja = (rsi_actual >= 60) or (stoch_actual >= 70)
 
@@ -190,8 +188,9 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico corregido.</i>")
+send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico y token verificado.</i>")
 
 while True:
     analyze()
     time.sleep(5)
+    
