@@ -17,7 +17,7 @@ CHAT_ID = "544714195"
 SYMBOL = "AUDCAD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- BOT COMPLETO: NOTIFICACIONES CONTINUAS + ANÁLISIS BALANCEADO ---", flush=True)
+print("--- BOT CON ANÁLISIS SIMÉTRICO (CALL Y PUT EQUILIBRADOS) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -71,32 +71,31 @@ def analyze():
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        # Indicadores técnicos equilibrados
+        # Indicadores técnicos optimizados
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         stoch_k = ta.momentum.stoch(high=df['high'], low=df['low'], close=df['close'], window=14, smooth_window=3)
-        sma_fast = ta.trend.sma_indicator(close=df['close'], window=5)
 
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
         
         rsi_actual = rsi_series.iloc[-1]
         stoch_actual = stoch_k.iloc[-1]
-        close_actual = current_candle['close']
-        sma_actual = sma_fast.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA (Entre segundo :25 y :45 de la vela activa)
+        # 1. PRE-ALERTA SIMÉTRICA (Detecta impulsos al alza y a la baja)
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            # Evaluación equilibrada para CALL y PUT
-            prediccion_subida = (rsi_actual <= 42 and stoch_actual <= 30) or (close_actual > sma_actual and rsi_actual < 48)
-            prediccion_bajada = (rsi_actual >= 58 and stoch_actual >= 70) or (close_actual < sma_actual and rsi_actual > 52)
+            # Límites simétricos respecto al centro (50%):
+            # SUBIDA (CALL): RSI <= 45 o Estocástico <= 35
+            # BAJADA (PUT):  RSI >= 55 o Estocástico >= 65
+            prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
+            prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
 
             direccion = None
-            if prediccion_subida:
+            if prediccion_subida and not prediccion_bajada:
                 direccion = "SUBIRÁ (CALL) 🟢"
-            elif prediccion_bajada:
+            elif prediccion_bajada and not prediccion_subida:
                 direccion = "BAJARÁ (PUT) 🔴"
 
             if direccion:
@@ -107,15 +106,15 @@ def analyze():
                     f"⚡ <b>PRE-ALERTA DETECTADA</b>\n\n"
                     f"📈 <b>Par:</b> {SYMBOL}\n"
                     f"🔮 <b>Proyección:</b> <b>{direccion}</b>\n"
-                    f"⏰ <b>PRÓXIMA ALERTA / ENTRADA:</b> <code>{hora_entrada_exacta}</code>\n"
+                    f"⏰ <b>PRÓXIMA ENTRADA:</b> <code>{hora_entrada_exacta}</code>\n"
                     f"📉 <b>RSI:</b> {rsi_actual:.2f} | <b>Stoch:</b> {stoch_actual:.2f}\n\n"
-                    f"📌 <i>Prepárate para entrar exactamente a las {hora_entrada_exacta}</i>"
+                    f"📌 <i>Prepárate para entrar a las {hora_entrada_exacta}</i>"
                 )
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
         # -------------------------------------------------------------
-        # 2. REPORTE CONTINUO EN CADA CAMBIO DE VELA (Con o Sin Alerta)
+        # 2. REPORTE EN CADA CAMBIO DE VELA (M1)
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
@@ -128,11 +127,10 @@ def analyze():
             hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
             proxima_vela = (datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL) + timedelta(minutes=1)).strftime("%H:%M:00")
 
-            # Determina si hay señal o si el mercado está neutral
-            if closed_rsi <= 35 or closed_stoch <= 20:
-                estado = "CALL 🟢 (ENTRADA CONFIRMADA A LA ALZA)"
-            elif closed_rsi >= 65 or closed_stoch >= 80:
-                estado = "PUT 🔴 (ENTRADA CONFIRMADA A LA BAJA)"
+            if closed_rsi <= 40 or closed_stoch <= 30:
+                estado = "CALL 🟢 (ALERTA DE SUBIDA)"
+            elif closed_rsi >= 60 or closed_stoch >= 70:
+                estado = "PUT 🔴 (ALERTA DE BAJADA)"
             else:
                 estado = "SIN ALERTA (MERCADO NEUTRAL) ⚪"
 
@@ -151,9 +149,8 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram("🚀 <b>Bot Activo con Notificación Continua</b>\n<i>Informando velas neutrales y estimación de próxima alerta.</i>")
+send_telegram("🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para detectar subidas (CALL) y bajadas (PUT).</i>")
 
 while True:
     analyze()
     time.sleep(5)
-
