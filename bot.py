@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-# Asegúrate de definir estas variables de entorno en tu servidor (Render, Heroku, etc.)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TU_TOKEN_AQUI")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL = "EURGBP=X"
@@ -37,7 +36,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
-    # Desactivar logs de peticiones HTTP en la consola para no saturar
     def log_message(self, format, *args):
         return
 
@@ -89,7 +87,6 @@ def get_market_data():
             'close': quote.get('close', [])
         })
         
-        # Eliminar filas con valores nulos
         return df.dropna().reset_index(drop=True)
     except Exception as e:
         print(f"Error al procesar datos de mercado: {e}", flush=True)
@@ -101,14 +98,13 @@ def analyze():
     try:
         df = get_market_data()
         
-        # Validación de seguridad: Se necesitan al menos 20 velas para RSI y Estocástico
         if len(df) < 20: 
             return
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        # Indicadores técnicos optimizados
+        # Indicadores técnicos simétricos
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         stoch_k = ta.momentum.stoch(
             high=df['high'], 
@@ -125,17 +121,18 @@ def analyze():
         stoch_actual = stoch_k.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA SIMÉTRICA
+        # 1. PRE-ALERTA SIMÉTRICA (Evalúa entre el segundo 25 y 45)
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
-            prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
+            # Criterios simétricos (RSI < 40 para alta vs RSI > 60 para baja)
+            prediccion_alta = (rsi_actual <= 40) or (stoch_actual <= 30)
+            prediccion_baja = (rsi_actual >= 60) or (stoch_actual >= 70)
 
             direccion = None
-            if prediccion_subida and not prediccion_bajada:
+            if prediccion_alta and not prediccion_baja:
                 direccion = "SUBIRÁ (CALL) 🟢"
-            elif prediccion_bajada and not prediccion_subida:
+            elif prediccion_baja and not prediccion_alta:
                 direccion = "BAJARÁ (PUT) 🔴"
 
             if direccion:
@@ -154,7 +151,7 @@ def analyze():
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
         # -------------------------------------------------------------
-        # 2. REPORTE EN CADA CAMBIO DE VELA (M1)
+        # 2. REPORTE SIMÉTRICO EN CAMBIO DE VELA (M1)
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
@@ -167,9 +164,13 @@ def analyze():
             hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
             proxima_vela = (datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL) + timedelta(minutes=1)).strftime("%H:%M:00")
 
-            if closed_rsi <= 40 or closed_stoch <= 30:
+            # Evaluación simétrica y mutuamente excluyente
+            es_alta = (closed_rsi <= 40) or (closed_stoch <= 30)
+            es_baja = (closed_rsi >= 60) or (closed_stoch >= 70)
+
+            if es_alta and not es_baja:
                 estado = "CALL 🟢 (ALERTA DE SUBIDA)"
-            elif closed_rsi >= 60 or closed_stoch >= 70:
+            elif es_baja and not es_alta:
                 estado = "PUT 🔴 (ALERTA DE BAJADA)"
             else:
                 estado = "SIN ALERTA (MERCADO NEUTRAL) ⚪"
@@ -189,7 +190,7 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico.</i>")
+send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico corregido.</i>")
 
 while True:
     analyze()
