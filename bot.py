@@ -12,18 +12,23 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
-CHAT_ID = "544714195"
-SYMBOL = "AUDCAD=X"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TU_TELEGRAM_TOKEN_AQUI")
+CHAT_ID = os.environ.get("CHAT_ID", "544714195")
+
+# Mercado actualizado a EUR/GBP
+SYMBOL = "EURGBP=X"  # Cambiar por "EURGBP-OTC" si aplicas una API de broker OTC directa
+
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- BOT CON ANÁLISIS SIMÉTRICO (CALL Y PUT EQUILIBRADOS) ---", flush=True)
+print(f"--- BOT CON ANÁLISIS SIMÉTRICO PARA {SYMBOL} ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
 
 session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+})
 
 # ===== SERVIDOR HEALTH CHECK =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -45,14 +50,23 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        session.post(url, data=payload, timeout=10)
+        res = session.post(url, data=payload, timeout=10)
+        if res.status_code != 200:
+            print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
     except Exception as e:
-        print(f"Error Telegram: {e}", flush=True)
+        print(f"Error Telegram Exception: {e}", flush=True)
 
 def get_market_data():
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
-    res = session.get(url, timeout=10).json()
-    result = res['chart']['result'][0]
+    res = session.get(url, timeout=10)
+    
+    if res.status_code != 200:
+        print(f"Error recuperando datos para {SYMBOL}: Status {res.status_code}", flush=True)
+        return pd.DataFrame()
+
+    data = res.json()
+    result = data['chart']['result'][0]
+    
     df = pd.DataFrame({
         'timestamp': result['timestamp'],
         'high': result['indicators']['quote'][0]['high'],
@@ -66,14 +80,20 @@ def analyze():
     
     try:
         df = get_market_data()
-        if len(df) < 20: return
+        if len(df) < 20: 
+            return
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        # Indicadores técnicos optimizados
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        stoch_k = ta.momentum.stoch(high=df['high'], low=df['low'], close=df['close'], window=14, smooth_window=3)
+        stoch_k = ta.momentum.stoch(
+            high=df['high'], 
+            low=df['low'], 
+            close=df['close'], 
+            window=14, 
+            smooth_window=3
+        )
 
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
@@ -82,13 +102,9 @@ def analyze():
         stoch_actual = stoch_k.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA SIMÉTRICA (Detecta impulsos al alza y a la baja)
+        # 1. PRE-ALERTA SIMÉTRICA
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
-            
-            # Límites simétricos respecto al centro (50%):
-            # SUBIDA (CALL): RSI <= 45 o Estocástico <= 35
-            # BAJADA (PUT):  RSI >= 55 o Estocástico >= 65
             prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
             prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
 
@@ -138,7 +154,7 @@ def analyze():
                 f"🕯️ <b>CAMBIO DE VELA M1</b> ({hora_vela})\n\n"
                 f"📈 <b>Par:</b> {SYMBOL}\n"
                 f"📊 <b>Precio Cierre:</b> {closed_candle['close']}\n"
-                f"📉 <b>RSI:</b> {closed_rsi:.2f}\n"
+                f"📉 <b>RSI:</b> {closed_rsi:.2f} | <b>Stoch:</b> {closed_stoch:.2f}\n"
                 f"🎯 <b>Estado:</b> {estado}\n\n"
                 f"⏳ <b>Próximo Análisis / Vela:</b> <code>{proxima_vela}</code>"
             )
@@ -149,8 +165,9 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram("🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para detectar subidas (CALL) y bajadas (PUT).</i>")
+send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para {SYMBOL}.</i>")
 
 while True:
     analyze()
     time.sleep(5)
+    
