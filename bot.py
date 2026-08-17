@@ -15,7 +15,7 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 # Cambiado a BTC-USD para funcionamiento 24/7
-SYMBOL = "BTC-USD" 
+SYMBOL = "EUR-USD" 
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
 print(f"--- BOT ANALIZANDO {SYMBOL} (24/7) ---", flush=True)
