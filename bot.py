@@ -15,11 +15,11 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# Configurado a BTC-USD para operar LUNES A LUNES (24/7) sin congelamientos
-SYMBOL = "AUD-CAD"
+# Símbolo oficial de Forex para EUR/USD en Yahoo Finance
+SYMBOL = "EURUSD=X" 
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT ANALIZANDO {SYMBOL} (24/7 LUNES A LUNES) ---", flush=True)
+print(f"--- BOT ANALIZANDO {SYMBOL} ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -98,10 +98,18 @@ def analyze():
 
         # 1. PRE-ALERTA (Segundo 25 a 45)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
+            # Condiciones para SUBIDA (CALL)
             pre_call = (rsi_actual <= 35) or (stoch_actual <= 25)
+            # Condiciones para BAJADA (PUT)
             pre_put = (rsi_actual >= 65) or (stoch_actual >= 75)
             
-            direccion = "SUBIRÁ (CALL) 🟢" if (pre_call and not pre_put) else ("BAJARÁ (PUT) 🔴" if (pre_put and not pre_call) else None)
+            # Asignación exclusiva según el estado
+            if pre_call and not pre_put:
+                direccion = "SUBIRÁ (CALL) 🟢"
+            elif pre_put and not pre_call:
+                direccion = "BAJARÁ (PUT) 🔴"
+            else:
+                direccion = None
 
             if direccion:
                 entrada = (ahora + timedelta(minutes=1)).strftime("%H:%M:00")
@@ -116,10 +124,16 @@ def analyze():
             closed_rsi = rsi_series.iloc[-2]
             closed_stoch = stoch_k.iloc[-2]
             
+            # Evaluación simétrica para la confirmación de la vela cerrada
             es_call = (closed_rsi <= 30) or (closed_stoch <= 20)
             es_put = (closed_rsi >= 70) or (closed_stoch >= 80)
             
-            estado = "CALL 🟢 (SUBIDA)" if (es_call and not es_put) else ("PUT 🔴 (BAJADA)" if (es_put and not es_call) else "NEUTRAL ⚪")
+            if es_call and not es_put:
+                estado = "CALL 🟢 (SUBIDA)"
+            elif es_put and not es_call:
+                estado = "PUT 🔴 (BAJADA)"
+            else:
+                estado = "NEUTRAL ⚪"
 
             msg = f"🕯️ <b>VELA M1 CERRADA</b>\n\n📈 <b>Par:</b> {SYMBOL}\n📊 <b>Cierre:</b> {df.iloc[-2]['close']}\n📉 RSI: {closed_rsi:.2f} | Stoch: {closed_stoch:.2f}\n🎯 <b>Estado:</b> {estado}"
             send_telegram(msg)
@@ -129,8 +143,8 @@ def analyze():
 
 # ===== INICIO =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL} (Lunes a Lunes)</b>")
+send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL}</b>")
 while True:
     analyze()
     time.sleep(5)
-        
+    
