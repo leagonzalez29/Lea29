@@ -14,7 +14,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
-SYMBOL = "EURGBP=X"
+SYMBOL = "EURUSD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
 print(f"--- BOT CON ANÁLISIS SIMÉTRICO ({SYMBOL}) ---", flush=True)
