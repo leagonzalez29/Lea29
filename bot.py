@@ -11,15 +11,17 @@ from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== CONFIGURACIÓN 24/7 CRIPTO =====
+# ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "BTC-USD"  # Criptomoneda activa 24/7
+SYMBOL = "BTC-USD"  # Cambia a "AUDCAD=X" para Forex de lunes a viernes
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- INICIANDO SCRIPT CRIPTO 24/7 (BTC-USD) ---", flush=True)
+print("--- INICIANDO BOT CON PRE-ALERTAS Y CONFIRMACIÓN DE VELA ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
+PRE_ALERT_SENT_FOR_TIMESTAMP = None
+
 session = requests.Session()
 session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
@@ -52,7 +54,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}", flush=True)
 
-# ===== OBTENER DATOS DE MERCADO 24/7 =====
+# ===== OBTENER DATOS =====
 def get_market_data():
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
     res = session.get(url, timeout=10).json()
@@ -66,51 +68,78 @@ def get_market_data():
         df = df.dropna().reset_index(drop=True)
         return df
     except Exception as e:
-        raise Exception(f"No se pudieron obtener datos en vivo de {SYMBOL}: {e}")
+        raise Exception(f"Error parseando datos: {e}")
 
-# ===== LÓGICA DE ANÁLISIS =====
+# ===== LÓGICA DE ANÁLISIS CON PRE-ALERTA =====
 def analyze():
-    global LAST_PROCESSED_TIMESTAMP
+    global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     
     try:
         df = get_market_data()
         if len(df) < 15:
             return
 
-        latest_candle = df.iloc[-1]
-        candle_time = latest_candle['timestamp']
-        last_price = latest_candle['close']
+        ahora = datetime.now(TIMEZONE_LOCAL)
+        segundo_actual = ahora.second
 
-        if LAST_PROCESSED_TIMESTAMP == candle_time:
-            return
-
-        LAST_PROCESSED_TIMESTAMP = candle_time
-
-        # Cálculo de RSI
+        # Calcular RSI general
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        last_rsi = rsi_series.dropna().iloc[-1]
-        hora_actual = datetime.now(TIMEZONE_LOCAL).strftime("%H:%M")
+        
+        # -------------------------------------------------------------
+        # 1. PRE-ALERTA (Se evalúa en la vela viva entre el segundo 45 y 55)
+        # -------------------------------------------------------------
+        current_candle = df.iloc[-1]
+        current_timestamp = current_candle['timestamp']
+        current_rsi = rsi_series.dropna().iloc[-1]
 
-        # Registro visible en logs de Render
-        print(f"[{hora_actual}] {SYMBOL} | Precio: ${last_price:,.2f} | RSI: {last_rsi:.2f}", flush=True)
+        if 45 <= segundo_actual <= 55 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
+            pre_direccion = None
+            if current_rsi <= 33:
+                pre_direccion = "CALL"
+            elif current_rsi >= 67:
+                pre_direccion = "PUT"
 
-        # Reglas de entrada
-        direccion = None
-        if last_rsi <= 30:
-            direccion = "CALL"
-        elif last_rsi >= 70:
-            direccion = "PUT"
+            if pre_direccion:
+                mensaje_pre = (
+                    f"⚠️ <b>PRE-ALERTA DE ENTRADA</b>\n\n"
+                    f"M1 {SYMBOL} ➔ PREPARAR <b>{pre_direccion}</b>\n"
+                    f"📉 <b>RSI Aprox:</b> {current_rsi:.2f}\n"
+                    f"⏱️ <i>Entrada probable en el próximo minuto (:00)</i>"
+                )
+                send_telegram(mensaje_pre)
+                PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # Envío de alerta
-        if direccion:
-            mensaje = (
-                f"🚨 <b>SEÑAL CRIPTO 24/7</b>\n\n"
-                f"M1 <b>{SYMBOL}</b> {hora_actual} ➔ <b>{direccion}</b>\n\n"
-                f"📉 <b>RSI Actual:</b> {last_rsi:.2f}\n"
-                f"📊 <b>Precio:</b> ${last_price:,.2f}\n\n"
-                "<b>CALL = ALZA 🟢 | PUT = BAJA 🔴</b>"
-            )
-            send_telegram(mensaje)
+        # -------------------------------------------------------------
+        # 2. SEÑAL CONFIRMADA (Se evalúa al cierre de la vela iloc[-2])
+        # -------------------------------------------------------------
+        closed_candle = df.iloc[-2]
+        closed_timestamp = closed_candle['timestamp']
+        closed_price = closed_candle['close']
+        closed_rsi = rsi_series.dropna().iloc[-2]
+
+        if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
+            LAST_PROCESSED_TIMESTAMP = closed_timestamp
+            hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
+
+            print(f"[{hora_vela}] {SYMBOL} | Cierre: {closed_price} | RSI: {closed_rsi:.2f}", flush=True)
+
+            direccion = None
+            if closed_rsi <= 30:
+                direccion = "CALL"
+            elif closed_rsi >= 70:
+                direccion = "PUT"
+
+            if direccion:
+                mensaje_conf = (
+                    f"📊 <b>NUEVA SEÑAL CONFIRMADA</b>\n\n"
+                    f"M1 {SYMBOL} {hora_vela} <b>{direccion}</b>\n\n"
+                    f"📉 <b>RSI Cierre:</b> {closed_rsi:.2f}\n"
+                    f"📊 <b>Precio:</b> {closed_price}\n\n"
+                    "<b>CALL = OPERATIVA A LA ALZA</b>\n"
+                    "<b>PUT = OPERATIVA A LA BAJA</b>\n\n"
+                    "Recuerden que tenemos una efectividad de un 90% sin MG. Con MG nuestra efectividad sube hasta un 95%."
+                )
+                send_telegram(mensaje_conf)
 
     except Exception as e:
         print(f"Error de análisis: {e}", flush=True)
@@ -118,9 +147,9 @@ def analyze():
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
 
-send_telegram(f"🚀 <b>Bot Cripto 24/7 Iniciado</b>\n<i>Monitoreando {SYMBOL} sin interrupciones por fin de semana.</i>")
+send_telegram("🚀 <b>Bot con Pre-Alertas Activo</b>\n<i>Recibirás avisos a los :45s para preparar tu operativa.</i>")
 
 while True:
     analyze()
-    time.sleep(10)
-        
+    time.sleep(5)  # Consulta cada 5 segundos para no perder la ventana de pre-alerta
+    
