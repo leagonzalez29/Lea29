@@ -14,10 +14,10 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "AUDCAD=X"  # Par AUD/CAD
+SYMBOL = "AUDCAD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- INICIANDO BOT 24/7 (NOTIFICACIÓN CONTINUA SIN FILTRO HORARIO) ---", flush=True)
+print("--- INICIANDO BOT OPTIMIZADO (FILTRO SEÑALES Y ANTI-SPAM) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -25,7 +25,7 @@ PRE_ALERT_SENT_FOR_TIMESTAMP = None
 session = requests.Session()
 session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
-# ===== SERVIDOR HEALTH CHECK PARA RENDER =====
+# ===== SERVIDOR HEALTH CHECK =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -43,109 +43,69 @@ def run_health_server():
 # ===== FUNCIÓN TELEGRAM =====
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        res = session.post(url, data=payload, timeout=10)
-        print(f"[{datetime.now(TIMEZONE_LOCAL).strftime('%H:%M:%S')}] Telegram Status: {res.status_code}", flush=True)
+        session.post(url, data=payload, timeout=10)
     except Exception as e:
-        print(f"Error enviando mensaje a Telegram: {e}", flush=True)
+        print(f"Error Telegram: {e}", flush=True)
 
-# ===== OBTENER DATOS =====
 def get_market_data():
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
     res = session.get(url, timeout=10).json()
-    
-    try:
-        result = res['chart']['result'][0]
-        timestamps = result['timestamp']
-        quotes = result['indicators']['quote'][0]['close']
-        
-        df = pd.DataFrame({'timestamp': timestamps, 'close': quotes})
-        df = df.dropna().reset_index(drop=True)
-        return df
-    except Exception as e:
-        raise Exception(f"Error parseando datos: {e}")
+    result = res['chart']['result'][0]
+    df = pd.DataFrame({'timestamp': result['timestamp'], 'close': result['indicators']['quote'][0]['close']})
+    return df.dropna().reset_index(drop=True)
 
-# ===== LÓGICA DE ANÁLISIS 24/7 =====
 def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     
     try:
         df = get_market_data()
-        if len(df) < 15:
-            return
+        if len(df) < 15: return
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-
-        # -------------------------------------------------------------
-        # 1. PRE-ALERTA (Segundo 45 a 55 de la vela activa)
-        # -------------------------------------------------------------
+        
+        # 1. LÓGICA DE PRE-ALERTA (ANTI-SPAM)
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
-        current_rsi = rsi_series.dropna().iloc[-1]
+        current_rsi = rsi_series.iloc[-1]
 
         if 45 <= segundo_actual <= 55 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
-            pre_direccion = None
-            if current_rsi <= 33:
-                pre_direccion = "CALL 🟢"
-            elif current_rsi >= 67:
-                pre_direccion = "PUT 🔴"
-
-            if pre_direccion:
-                mensaje_pre = (
-                    f"⚠️ <b>PRE-ALERTA DE ENTRADA</b>\n\n"
-                    f"M1 {SYMBOL} ➔ PREPARAR <b>{pre_direccion}</b>\n"
-                    f"📉 <b>RSI Aprox:</b> {current_rsi:.2f}\n"
-                    f"⏱️ <i>Entrada probable en el próximo minuto (:00)</i>"
-                )
-                send_telegram(mensaje_pre)
+            if current_rsi <= 33 or current_rsi >= 67:
+                direccion = "CALL 🟢" if current_rsi <= 33 else "PUT 🔴"
+                msg = f"⚠️ <b>PRE-ALERTA</b>\n\n{SYMBOL} ➔ <b>{direccion}</b>\n📉 RSI: {current_rsi:.2f}"
+                send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # -------------------------------------------------------------
-        # 2. CAMBIO DE VELA CONFIRMADO (Notificación 24/7 en cada cierre)
-        # -------------------------------------------------------------
+        # 2. SEÑAL CONFIRMADA (SÓLO SI ES CALL O PUT)
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
-        closed_price = closed_candle['close']
-        closed_rsi = rsi_series.dropna().iloc[-2]
+        closed_rsi = rsi_series.iloc[-2]
 
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
-            hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
+            
+            estado = None
+            if closed_rsi <= 30: estado = "CALL 🟢 (SOBREVENTA)"
+            elif closed_rsi >= 70: estado = "PUT 🔴 (SOBRECOMPRA)"
 
-            if closed_rsi <= 30:
-                estado = "CALL 🟢 (SOBREVENTA)"
-            elif closed_rsi >= 70:
-                estado = "PUT 🔴 (SOBRECOMPRA)"
-            else:
-                estado = "NEUTRAL ⚪ (SIN SEÑAL)"
-
-            print(f"🕯️ [CAMBIO DE VELA {hora_vela}] {SYMBOL} | Cierre: {closed_price} | RSI: {closed_rsi:.2f} | Estado: {estado}", flush=True)
-
-            mensaje_vela = (
-                f"🕯️ <b>CAMBIO DE VELA M1</b> ({hora_vela})\n\n"
-                f"📈 <b>Par:</b> {SYMBOL}\n"
-                f"📊 <b>Precio Cierre:</b> {closed_price}\n"
-                f"📉 <b>RSI:</b> {closed_rsi:.2f}\n"
-                f"🎯 <b>Estado:</b> {estado}"
-            )
-            send_telegram(mensaje_vela)
+            if estado: # Solo envía si hay señal, ignora neutral
+                hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
+                msg = (f"📊 <b>SEÑAL CONFIRMADA</b> ({hora_vela})\n\n"
+                       f"📈 {SYMBOL} ➔ {estado}\n"
+                       f"📉 RSI: {closed_rsi:.2f}")
+                send_telegram(msg)
 
     except Exception as e:
-        print(f"Error de análisis: {e}", flush=True)
+        print(f"Error: {e}", flush=True)
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-
-send_telegram("🚀 <b>Bot Activo 24/7</b>\n<i>Notificando cada cambio de vela M1 de AUD/CAD en tiempo real.</i>")
+send_telegram("🚀 <b>Bot Optimizado Activo</b>\n<i>Filtro de señales: Solo CALL/PUT.</i>")
 
 while True:
     analyze()
-    time.sleep(5)
+    time.sleep(7) # Ajustado a 7s para evitar redundancia rápida
     
