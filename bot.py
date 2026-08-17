@@ -17,7 +17,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL = "EURUSD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT CON ANÁLISIS SIMÉTRICO ({SYMBOL}) ---", flush=True)
+print(f"--- BOT CON ANÁLISIS BALANCEADO CALL/PUT ({SYMBOL}) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -102,7 +102,7 @@ def analyze():
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        # Indicadores técnicos simétricos
+        # Indicadores técnicos
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         stoch_k = ta.momentum.stoch(
             high=df['high'], 
@@ -119,18 +119,18 @@ def analyze():
         stoch_actual = stoch_k.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA SIMÉTRICA (Evalúa entre el segundo 25 y 45)
+        # 1. PRE-ALERTA (Evalúa entre el segundo 25 y 45)
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            # Criterios simétricos (RSI <= 40 para alta vs RSI >= 60 para baja)
-            prediccion_alta = (rsi_actual <= 40) or (stoch_actual <= 30)
-            prediccion_baja = (rsi_actual >= 60) or (stoch_actual >= 70)
+            # Criterios balanceados para Pre-Alerta (Niveles intermedios)
+            pre_call = (rsi_actual <= 35) or (stoch_actual <= 25)
+            pre_put = (rsi_actual >= 65) or (stoch_actual >= 75)
 
             direccion = None
-            if prediccion_alta and not prediccion_baja:
+            if pre_call and not pre_put:
                 direccion = "SUBIRÁ (CALL) 🟢"
-            elif prediccion_baja and not prediccion_alta:
+            elif pre_put and not pre_call:
                 direccion = "BAJARÁ (PUT) 🔴"
 
             if direccion:
@@ -149,7 +149,7 @@ def analyze():
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
         # -------------------------------------------------------------
-        # 2. REPORTE SIMÉTRICO EN CAMBIO DE VELA (M1)
+        # 2. REPORTE EN CAMBIO DE VELA (M1)
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
@@ -162,13 +162,15 @@ def analyze():
             hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
             proxima_vela = (datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL) + timedelta(minutes=1)).strftime("%H:%M:00")
 
-            # Evaluación simétrica y mutuamente excluyente
-            es_alta = (closed_rsi <= 40) or (closed_stoch <= 30)
-            es_baja = (closed_rsi >= 60) or (closed_stoch >= 70)
+            # Evaluación estricta y mutuamente excluyente
+            # Sobreventa (CALL): RSI <= 30 o Estocástico <= 20
+            # Sobrecompra (PUT): RSI >= 70 o Estocástico >= 80
+            es_call = (closed_rsi <= 30) or (closed_stoch <= 20)
+            es_put = (closed_rsi >= 70) or (closed_stoch >= 80)
 
-            if es_alta and not es_baja:
+            if es_call and not es_put:
                 estado = "CALL 🟢 (ALERTA DE SUBIDA)"
-            elif es_baja and not es_alta:
+            elif es_put and not es_call:
                 estado = "PUT 🔴 (ALERTA DE BAJADA)"
             else:
                 estado = "SIN ALERTA (MERCADO NEUTRAL) ⚪"
@@ -188,9 +190,8 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico y token verificado.</i>")
+send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con alertas balanceadas CALL/PUT.</i>")
 
 while True:
     analyze()
     time.sleep(5)
-    
