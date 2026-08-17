@@ -15,8 +15,8 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# Símbolo oficial de Forex para EUR/USD en Yahoo Finance
-SYMBOL = "EURUSD=X" 
+# BTC-USD para garantizar oscilaciones constantes de subida y bajada 24/7
+SYMBOL = "BTC-USD" 
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
 print(f"--- BOT ANALIZANDO {SYMBOL} ---", flush=True)
@@ -96,14 +96,11 @@ def analyze():
         rsi_actual = rsi_series.iloc[-1]
         stoch_actual = stoch_k.iloc[-1]
 
-        # 1. PRE-ALERTA (Segundo 25 a 45)
+        # 1. PRE-ALERTA (Segundo 25 a 45) - CONFIRMACIÓN DOBLE (AND)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
-            # Condiciones para SUBIDA (CALL)
-            pre_call = (rsi_actual <= 35) or (stoch_actual <= 25)
-            # Condiciones para BAJADA (PUT)
-            pre_put = (rsi_actual >= 65) or (stoch_actual >= 75)
+            pre_call = (rsi_actual <= 35) and (stoch_actual <= 25)
+            pre_put = (rsi_actual >= 65) and (stoch_actual >= 75)
             
-            # Asignación exclusiva según el estado
             if pre_call and not pre_put:
                 direccion = "SUBIRÁ (CALL) 🟢"
             elif pre_put and not pre_call:
@@ -117,16 +114,15 @@ def analyze():
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # 2. CAMBIO DE VELA M1
+        # 2. CAMBIO DE VELA M1 - CONFIRMACIÓN DOBLE (AND)
         closed_timestamp = df.iloc[-2]['timestamp']
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
             closed_rsi = rsi_series.iloc[-2]
             closed_stoch = stoch_k.iloc[-2]
             
-            # Evaluación simétrica para la confirmación de la vela cerrada
-            es_call = (closed_rsi <= 30) or (closed_stoch <= 20)
-            es_put = (closed_rsi >= 70) or (closed_stoch >= 80)
+            es_call = (closed_rsi <= 30) and (closed_stoch <= 20)
+            es_put = (closed_rsi >= 70) and (closed_stoch >= 80)
             
             if es_call and not es_put:
                 estado = "CALL 🟢 (SUBIDA)"
@@ -147,4 +143,4 @@ send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL}</b>")
 while True:
     analyze()
     time.sleep(5)
-    
+        
