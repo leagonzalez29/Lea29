@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import ta
 import sys
-from datetime import datetime, time as dtime
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -14,14 +14,10 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "AUDCAD=X"  # Ajustado para AUD/CAD
+SYMBOL = "AUDCAD=X"  # Par AUD/CAD
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-# Rango horario permitido: 12:40:00 a 01:00:00
-HORA_INICIO = dtime(12, 40, 0)
-HORA_FIN = dtime(13, 0, 0)
-
-print("--- INICIANDO BOT CON FILTRO HORARIO (12:40 - 01:00) ---", flush=True)
+print("--- INICIANDO BOT 24/7 (NOTIFICACIÓN CONTINUA SIN FILTRO HORARIO) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -74,29 +70,21 @@ def get_market_data():
     except Exception as e:
         raise Exception(f"Error parseando datos: {e}")
 
-# ===== LÓGICA DE ANÁLISIS CON PRE-ALERTA =====
+# ===== LÓGICA DE ANÁLISIS 24/7 =====
 def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     
     try:
-        ahora = datetime.now(TIMEZONE_LOCAL)
-        hora_actual = ahora.time()
-
-        # RESTRICCIÓN HORARIA: Solo ejecuta si la hora está entre 12:40 y 13:00
-        if not (HORA_INICIO <= hora_actual <= HORA_FIN):
-            return
-
         df = get_market_data()
         if len(df) < 15:
             return
 
+        ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
-
-        # Calcular RSI general
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        
+
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA (Entre segundo 45 y 55 de la vela activa)
+        # 1. PRE-ALERTA (Segundo 45 a 55 de la vela activa)
         # -------------------------------------------------------------
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
@@ -105,9 +93,9 @@ def analyze():
         if 45 <= segundo_actual <= 55 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             pre_direccion = None
             if current_rsi <= 33:
-                pre_direccion = "CALL"
+                pre_direccion = "CALL 🟢"
             elif current_rsi >= 67:
-                pre_direccion = "PUT"
+                pre_direccion = "PUT 🔴"
 
             if pre_direccion:
                 mensaje_pre = (
@@ -120,7 +108,7 @@ def analyze():
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
         # -------------------------------------------------------------
-        # 2. SEÑAL CONFIRMADA (Cierre de la vela anterior iloc[-2])
+        # 2. CAMBIO DE VELA CONFIRMADO (Notificación 24/7 en cada cierre)
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
@@ -131,25 +119,23 @@ def analyze():
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
             hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
 
-            print(f"[{hora_vela}] {SYMBOL} | Cierre: {closed_price} | RSI: {closed_rsi:.2f}", flush=True)
-
-            direccion = None
             if closed_rsi <= 30:
-                direccion = "CALL"
+                estado = "CALL 🟢 (SOBREVENTA)"
             elif closed_rsi >= 70:
-                direccion = "PUT"
+                estado = "PUT 🔴 (SOBRECOMPRA)"
+            else:
+                estado = "NEUTRAL ⚪ (SIN SEÑAL)"
 
-            if direccion:
-                mensaje_conf = (
-                    f"📊 <b>NUEVA SEÑAL CONFIRMADA</b>\n\n"
-                    f"M1 {SYMBOL} {hora_vela} <b>{direccion}</b>\n\n"
-                    f"📉 <b>RSI Cierre:</b> {closed_rsi:.2f}\n"
-                    f"📊 <b>Precio:</b> {closed_price}\n\n"
-                    "<b>CALL = OPERATIVA A LA ALZA</b>\n"
-                    "<b>PUT = OPERATIVA A LA BAJA</b>\n\n"
-                    "Recuerden que tenemos una efectividad de un 90% sin MG. Con MG nuestra efectividad sube hasta un 95%."
-                )
-                send_telegram(mensaje_conf)
+            print(f"🕯️ [CAMBIO DE VELA {hora_vela}] {SYMBOL} | Cierre: {closed_price} | RSI: {closed_rsi:.2f} | Estado: {estado}", flush=True)
+
+            mensaje_vela = (
+                f"🕯️ <b>CAMBIO DE VELA M1</b> ({hora_vela})\n\n"
+                f"📈 <b>Par:</b> {SYMBOL}\n"
+                f"📊 <b>Precio Cierre:</b> {closed_price}\n"
+                f"📉 <b>RSI:</b> {closed_rsi:.2f}\n"
+                f"🎯 <b>Estado:</b> {estado}"
+            )
+            send_telegram(mensaje_vela)
 
     except Exception as e:
         print(f"Error de análisis: {e}", flush=True)
@@ -157,8 +143,9 @@ def analyze():
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
 
-send_telegram("🚀 <b>Bot Activo para AUD/CAD</b>\n<i>Filtro horario activado: Solo enviará señales de 12:40 a 01:00.</i>")
+send_telegram("🚀 <b>Bot Activo 24/7</b>\n<i>Notificando cada cambio de vela M1 de AUD/CAD en tiempo real.</i>")
 
 while True:
     analyze()
     time.sleep(5)
+    
