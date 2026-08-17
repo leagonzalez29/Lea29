@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import ta
 import sys
-from datetime import datetime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -14,10 +14,14 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 CHAT_ID = "544714195"
-SYMBOL = "BTC-USD"  # Cambia a "AUDCAD=X" para Forex de lunes a viernes
+SYMBOL = "AUDCAD=X"  # Ajustado para AUD/CAD
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- INICIANDO BOT CON PRE-ALERTAS Y CONFIRMACIÓN DE VELA ---", flush=True)
+# Rango horario permitido: 12:40:00 a 01:00:00
+HORA_INICIO = dtime(12, 40, 0)
+HORA_FIN = dtime(13, 0, 0)
+
+print("--- INICIANDO BOT CON FILTRO HORARIO (12:40 - 01:00) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -75,18 +79,24 @@ def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     
     try:
+        ahora = datetime.now(TIMEZONE_LOCAL)
+        hora_actual = ahora.time()
+
+        # RESTRICCIÓN HORARIA: Solo ejecuta si la hora está entre 12:40 y 13:00
+        if not (HORA_INICIO <= hora_actual <= HORA_FIN):
+            return
+
         df = get_market_data()
         if len(df) < 15:
             return
 
-        ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
 
         # Calcular RSI general
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA (Se evalúa en la vela viva entre el segundo 45 y 55)
+        # 1. PRE-ALERTA (Entre segundo 45 y 55 de la vela activa)
         # -------------------------------------------------------------
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
@@ -110,7 +120,7 @@ def analyze():
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
         # -------------------------------------------------------------
-        # 2. SEÑAL CONFIRMADA (Se evalúa al cierre de la vela iloc[-2])
+        # 2. SEÑAL CONFIRMADA (Cierre de la vela anterior iloc[-2])
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
@@ -147,9 +157,8 @@ def analyze():
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
 
-send_telegram("🚀 <b>Bot con Pre-Alertas Activo</b>\n<i>Recibirás avisos a los :45s para preparar tu operativa.</i>")
+send_telegram("🚀 <b>Bot Activo para AUD/CAD</b>\n<i>Filtro horario activado: Solo enviará señales de 12:40 a 01:00.</i>")
 
 while True:
     analyze()
-    time.sleep(5)  # Consulta cada 5 segundos para no perder la ventana de pre-alerta
-    
+    time.sleep(5)
