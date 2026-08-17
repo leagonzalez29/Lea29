@@ -12,20 +12,20 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-# Fetch from environment variables or set fallbacks (DO NOT hardcode keys in production)
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
+# Asegúrate de definir estas variables de entorno en tu servidor (Render, Heroku, etc.)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TU_TOKEN_AQUI")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
-SYMBOL = "AUDCAD=X"
+SYMBOL = "EURGBP=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- BOT CON ANÁLISIS SIMÉTRICO (CALL Y PUT EQUILIBRADOS) ---", flush=True)
+print(f"--- BOT CON ANÁLISIS SIMÉTRICO ({SYMBOL}) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
 # ===== SERVIDOR HEALTH CHECK =====
@@ -37,6 +37,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
+    # Desactivar logs de peticiones HTTP en la consola para no saturar
+    def log_message(self, format, *args):
+        return
 
 def run_health_server():
     port = int(os.environ.get("PORT", 10000))
@@ -45,6 +48,10 @@ def run_health_server():
 
 # ===== FUNCIÓN TELEGRAM =====
 def send_telegram(message):
+    if TELEGRAM_TOKEN == "TU_TOKEN_AQUI":
+        print("⚠️ Advertencia: TELEGRAM_TOKEN no configurado correctamente.", flush=True)
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
@@ -56,28 +63,45 @@ def send_telegram(message):
 
 def get_market_data():
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
-    res = session.get(url, timeout=10)
-    
-    if res.status_code != 200:
-        print(f"Error recuperando datos del mercado: Status {res.status_code}", flush=True)
-        return pd.DataFrame()
+    try:
+        res = session.get(url, timeout=10)
+        if res.status_code != 200:
+            print(f"Error recuperando datos del mercado ({SYMBOL}): Status {res.status_code}", flush=True)
+            return pd.DataFrame()
 
-    data = res.json()
-    result = data['chart']['result'][0]
-    
-    df = pd.DataFrame({
-        'timestamp': result['timestamp'],
-        'high': result['indicators']['quote'][0]['high'],
-        'low': result['indicators']['quote'][0]['low'],
-        'close': result['indicators']['quote'][0]['close']
-    })
-    return df.dropna().reset_index(drop=True)
+        data = res.json()
+        result = data.get('chart', {}).get('result')
+        
+        if not result or len(result) == 0:
+            return pd.DataFrame()
+
+        chart_data = result[0]
+        timestamps = chart_data.get('timestamp', [])
+        quote = chart_data.get('indicators', {}).get('quote', [{}])[0]
+
+        if not timestamps or not quote:
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            'timestamp': timestamps,
+            'high': quote.get('high', []),
+            'low': quote.get('low', []),
+            'close': quote.get('close', [])
+        })
+        
+        # Eliminar filas con valores nulos
+        return df.dropna().reset_index(drop=True)
+    except Exception as e:
+        print(f"Error al procesar datos de mercado: {e}", flush=True)
+        return pd.DataFrame()
 
 def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     
     try:
         df = get_market_data()
+        
+        # Validación de seguridad: Se necesitan al menos 20 velas para RSI y Estocástico
         if len(df) < 20: 
             return
 
@@ -101,13 +125,10 @@ def analyze():
         stoch_actual = stoch_k.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA SIMÉTRICA (Detecta impulsos al alza y a la baja)
+        # 1. PRE-ALERTA SIMÉTRICA
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            # Límites simétricos respecto al centro (50%):
-            # SUBIDA (CALL): RSI <= 45 o Estocástico <= 35
-            # BAJADA (PUT):  RSI >= 55 o Estocástico >= 65
             prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
             prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
 
@@ -168,9 +189,8 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram("🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para detectar subidas (CALL) y bajadas (PUT).</i>")
+send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Monitoreando {SYMBOL} con análisis simétrico.</i>")
 
 while True:
     analyze()
     time.sleep(5)
-    
