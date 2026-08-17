@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweV
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
 # Configurado a BTC-USD para operar LUNES A LUNES (24/7) sin congelamientos
-SYMBOL = "BTC-USD"
+SYMBOL = "AUD-CAD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
 print(f"--- BOT ANALIZANDO {SYMBOL} (24/7 LUNES A LUNES) ---", flush=True)
