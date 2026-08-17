@@ -12,12 +12,13 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
+# Fetch from environment variables or set fallbacks (DO NOT hardcode keys in production)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
-SYMBOL = "EURGBP=X"
+SYMBOL = "AUDCAD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT CON FILTRO DE TENDENCIA (EMA 200) PARA {SYMBOL} ---", flush=True)
+print("--- BOT CON ANÁLISIS SIMÉTRICO (CALL Y PUT EQUILIBRADOS) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -58,7 +59,7 @@ def get_market_data():
     res = session.get(url, timeout=10)
     
     if res.status_code != 200:
-        print(f"Error recuperando datos del mercado ({SYMBOL}): Status {res.status_code}", flush=True)
+        print(f"Error recuperando datos del mercado: Status {res.status_code}", flush=True)
         return pd.DataFrame()
 
     data = res.json()
@@ -77,16 +78,13 @@ def analyze():
     
     try:
         df = get_market_data()
-        
-        # Requiere un mínimo de 200 velas para calcular la EMA 200
-        if len(df) < 200: 
-            print(f"Esperando suficientes velas para EMA 200 (Actuales: {len(df)})", flush=True)
+        if len(df) < 20: 
             return
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        # Indicadores técnicos
+        # Indicadores técnicos optimizados
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         stoch_k = ta.momentum.stoch(
             high=df['high'], 
@@ -95,26 +93,23 @@ def analyze():
             window=14, 
             smooth_window=3
         )
-        ema_200 = ta.trend.ema_indicator(close=df['close'], window=200)
 
         current_candle = df.iloc[-1]
         current_timestamp = current_candle['timestamp']
         
-        price_actual = current_candle['close']
         rsi_actual = rsi_series.iloc[-1]
         stoch_actual = stoch_k.iloc[-1]
-        ema_actual = ema_200.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA CON FILTRO DE TENDENCIA EMA 200
+        # 1. PRE-ALERTA SIMÉTRICA (Detecta impulsos al alza y a la baja)
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             
-            # Tendencia Alcista (CALL): RSI/Stoch en sobreventa Y precio por encima de EMA 200
-            prediccion_subida = ((rsi_actual <= 45) or (stoch_actual <= 35)) and (price_actual > ema_actual)
-            
-            # Tendencia Bajista (PUT): RSI/Stoch en sobrecompra Y precio por debajo de EMA 200
-            prediccion_bajada = ((rsi_actual >= 55) or (stoch_actual >= 65)) and (price_actual < ema_actual)
+            # Límites simétricos respecto al centro (50%):
+            # SUBIDA (CALL): RSI <= 45 o Estocástico <= 35
+            # BAJADA (PUT):  RSI >= 55 o Estocástico >= 65
+            prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
+            prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
 
             direccion = None
             if prediccion_subida and not prediccion_bajada:
@@ -127,13 +122,12 @@ def analyze():
                 hora_entrada_exacta = momento_entrada.strftime("%H:%M:00")
 
                 msg = (
-                    f"⚡ <b>PRE-ALERTA CONFIRMADA POR EMA 200</b>\n\n"
+                    f"⚡ <b>PRE-ALERTA DETECTADA</b>\n\n"
                     f"📈 <b>Par:</b> {SYMBOL}\n"
                     f"🔮 <b>Proyección:</b> <b>{direccion}</b>\n"
                     f"⏰ <b>PRÓXIMA ENTRADA:</b> <code>{hora_entrada_exacta}</code>\n"
-                    f"📊 <b>Precio:</b> {price_actual:.5f} | <b>EMA 200:</b> {ema_actual:.5f}\n"
                     f"📉 <b>RSI:</b> {rsi_actual:.2f} | <b>Stoch:</b> {stoch_actual:.2f}\n\n"
-                    f"📌 <i>Entrada a las {hora_entrada_exacta} a favor de la tendencia</i>"
+                    f"📌 <i>Prepárate para entrar a las {hora_entrada_exacta}</i>"
                 )
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
@@ -143,10 +137,8 @@ def analyze():
         # -------------------------------------------------------------
         closed_candle = df.iloc[-2]
         closed_timestamp = closed_candle['timestamp']
-        closed_price = closed_candle['close']
         closed_rsi = rsi_series.iloc[-2]
         closed_stoch = stoch_k.iloc[-2]
-        closed_ema = ema_200.iloc[-2]
 
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
@@ -154,17 +146,17 @@ def analyze():
             hora_vela = datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL).strftime("%H:%M")
             proxima_vela = (datetime.fromtimestamp(closed_timestamp, tz=TIMEZONE_LOCAL) + timedelta(minutes=1)).strftime("%H:%M:00")
 
-            if (closed_rsi <= 40 or closed_stoch <= 30) and (closed_price > closed_ema):
-                estado = "CALL 🟢 (ALERTA DE SUBIDA CONFIRMADA)"
-            elif (closed_rsi >= 60 or closed_stoch >= 70) and (closed_price < closed_ema):
-                estado = "PUT 🔴 (ALERTA DE BAJADA CONFIRMADA)"
+            if closed_rsi <= 40 or closed_stoch <= 30:
+                estado = "CALL 🟢 (ALERTA DE SUBIDA)"
+            elif closed_rsi >= 60 or closed_stoch >= 70:
+                estado = "PUT 🔴 (ALERTA DE BAJADA)"
             else:
-                estado = "NEUTRAL / SIN CONFIRMACIÓN DE TENDENCIA ⚪"
+                estado = "SIN ALERTA (MERCADO NEUTRAL) ⚪"
 
             msg = (
                 f"🕯️ <b>CAMBIO DE VELA M1</b> ({hora_vela})\n\n"
                 f"📈 <b>Par:</b> {SYMBOL}\n"
-                f"📊 <b>Cierre:</b> {closed_price:.5f} | <b>EMA 200:</b> {closed_ema:.5f}\n"
+                f"📊 <b>Precio Cierre:</b> {closed_candle['close']}\n"
                 f"📉 <b>RSI:</b> {closed_rsi:.2f} | <b>Stoch:</b> {closed_stoch:.2f}\n"
                 f"🎯 <b>Estado:</b> {estado}\n\n"
                 f"⏳ <b>Próximo Análisis / Vela:</b> <code>{proxima_vela}</code>"
@@ -176,7 +168,7 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Filtro de tendencia EMA 200 configurado para {SYMBOL}.</i>")
+send_telegram("🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para detectar subidas (CALL) y bajadas (PUT).</i>")
 
 while True:
     analyze()
