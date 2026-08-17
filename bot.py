@@ -14,11 +14,12 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== CONFIGURACIÓN =====
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
-# Cambiado a BTC-USD para funcionamiento 24/7
-SYMBOL = "EUR-USD" 
+
+# Configurado a BTC-USD para operar LUNES A LUNES (24/7) sin congelamientos
+SYMBOL = "BTC-USD" 
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT ANALIZANDO {SYMBOL} (24/7) ---", flush=True)
+print(f"--- BOT ANALIZANDO {SYMBOL} (24/7 LUNES A LUNES) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -95,7 +96,7 @@ def analyze():
         rsi_actual = rsi_series.iloc[-1]
         stoch_actual = stoch_k.iloc[-1]
 
-        # 1. PRE-ALERTA
+        # 1. PRE-ALERTA (Segundo 25 a 45)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             pre_call = (rsi_actual <= 35) or (stoch_actual <= 25)
             pre_put = (rsi_actual >= 65) or (stoch_actual >= 75)
@@ -108,7 +109,7 @@ def analyze():
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # 2. CAMBIO DE VELA
+        # 2. CAMBIO DE VELA M1
         closed_timestamp = df.iloc[-2]['timestamp']
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
@@ -126,9 +127,9 @@ def analyze():
     except Exception as e:
         print(f"Error: {e}", flush=True)
 
+# ===== INICIO =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL}</b>")
+send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL} (Lunes a Lunes)</b>")
 while True:
     analyze()
     time.sleep(5)
-    
