@@ -17,10 +17,9 @@ CHAT_ID = "544714195"
 SYMBOL = "AUDCAD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print("--- INICIANDO SCRIPT CON FILTRO DE MERCADO CERRADO ---", flush=True)
+print("--- INICIANDO SCRIPT DE SEÑALES RSI (CORREGIDO Y OPTIMIZADO) ---", flush=True)
 
-LAST_CANDLE_TIMESTAMP = None
-LAST_PRICE = None
+LAST_PROCESSED_TIMESTAMP = None
 session = requests.Session()
 session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
@@ -49,13 +48,14 @@ def send_telegram(message):
     }
     try:
         res = session.post(url, data=payload, timeout=10)
-        print(f"Respuesta Telegram: {res.status_code}", flush=True)
+        print(f"[{datetime.now(TIMEZONE_LOCAL).strftime('%H:%M:%S')}] Telegram Status: {res.status_code}", flush=True)
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}", flush=True)
 
 # ===== OBTENER DATOS DE YAHOO FINANCE =====
 def get_market_data():
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
+    # Rango ampliado a 5 días para asegurar datos históricos suficientes
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=5d&interval=1m"
     res = session.get(url, timeout=10).json()
     
     try:
@@ -71,43 +71,45 @@ def get_market_data():
 
 # ===== LÓGICA DE ANÁLISIS =====
 def analyze():
-    global LAST_CANDLE_TIMESTAMP, LAST_PRICE
+    global LAST_PROCESSED_TIMESTAMP
     ahora_local = datetime.now(TIMEZONE_LOCAL)
 
-    # 1. FILTRO DE FIN DE SEMANA: Si es Sábado (5) o Domingo (6) antes de la apertura (5:00 PM), no analiza
+    # Filtro de fin de semana (Sábado completo y Domingo antes de las 5:00 PM)
     if ahora_local.weekday() == 5 or (ahora_local.weekday() == 6 and ahora_local.hour < 17):
-        print(f"[{ahora_local.strftime('%H:%M:%S')}] Mercado cerrado (Fin de semana). En pausa...", flush=True)
+        print(f"[{ahora_local.strftime('%H:%M:%S')}] Mercado cerrado (Fin de semana). Pausado...", flush=True)
         return
 
     try:
         df = get_market_data()
         if len(df) < 15:
+            print(f"[{ahora_local.strftime('%H:%M:%S')}] Velas insuficientes: {len(df)}", flush=True)
             return
 
         latest_candle = df.iloc[-1]
         candle_time = latest_candle['timestamp']
         last_price = latest_candle['close']
 
-        # Evitar procesar si la vela o el precio no han cambiado (datos congelados)
-        if LAST_CANDLE_TIMESTAMP == candle_time or LAST_PRICE == last_price:
+        # Evaluar la vela ÚNICAMENTE por marca de tiempo (sin bloquear por precio plano)
+        if LAST_PROCESSED_TIMESTAMP == candle_time:
             return
 
-        LAST_CANDLE_TIMESTAMP = candle_time
-        LAST_PRICE = last_price
+        LAST_PROCESSED_TIMESTAMP = candle_time
 
         # Cálculo de RSI
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         last_rsi = rsi_series.dropna().iloc[-1]
         hora_actual = ahora_local.strftime("%H:%M")
 
-        # Reglas claras de RSI para evitar falsas señales
+        # Imprimir en los logs de Render para monitoreo continuo
+        print(f"[{hora_actual}] Vela Procesada | Precio: {last_price:.5f} | RSI: {last_rsi:.2f}", flush=True)
+
         direccion = None
         if last_rsi <= 30:
             direccion = "CALL"
         elif last_rsi >= 70:
             direccion = "PUT"
 
-        # Solo si hay una condición técnica real se envía la señal
+        # Envío de la alerta si se cumple la condición
         if direccion:
             mensaje = (
                 f"📊 <b>NUEVA SEÑAL DETECTADA</b>\n\n"
@@ -121,13 +123,14 @@ def analyze():
             send_telegram(mensaje)
 
     except Exception as e:
-        print(f"Error en análisis: {e}", flush=True)
+        print(f"[{ahora_local.strftime('%H:%M:%S')}] Error en análisis: {e}", flush=True)
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
 
-send_telegram("🚀 <b>¡Bot corregido en Render!</b>\n<i>Filtro de mercado cerrado activo. Las señales reales comenzarán al abrir el mercado hoy a las 5:00 PM.</i>")
+send_telegram("🚀 <b>Bot de Señales Iniciado</b>\n<i>Monitoreo activo de AUD/CAD M1 corregido.</i>")
 
 while True:
     analyze()
     time.sleep(10)
+                
