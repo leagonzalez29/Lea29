@@ -12,15 +12,13 @@ from zoneinfo import ZoneInfo
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TU_TELEGRAM_TOKEN_AQUI")
+# Fetch from environment variables or set fallbacks (DO NOT hardcode keys in production)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
-
-# Mercado actualizado a EUR/GBP
-SYMBOL = "EURGBP=X"  # Cambiar por "EURGBP-OTC" si aplicas una API de broker OTC directa
-
+SYMBOL = "AUDCAD=X"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT CON ANÁLISIS SIMÉTRICO PARA {SYMBOL} ---", flush=True)
+print("--- BOT CON ANÁLISIS SIMÉTRICO (CALL Y PUT EQUILIBRADOS) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -61,7 +59,7 @@ def get_market_data():
     res = session.get(url, timeout=10)
     
     if res.status_code != 200:
-        print(f"Error recuperando datos para {SYMBOL}: Status {res.status_code}", flush=True)
+        print(f"Error recuperando datos del mercado: Status {res.status_code}", flush=True)
         return pd.DataFrame()
 
     data = res.json()
@@ -86,6 +84,7 @@ def analyze():
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
+        # Indicadores técnicos optimizados
         rsi_series = ta.momentum.rsi(close=df['close'], window=14)
         stoch_k = ta.momentum.stoch(
             high=df['high'], 
@@ -102,9 +101,13 @@ def analyze():
         stoch_actual = stoch_k.iloc[-1]
 
         # -------------------------------------------------------------
-        # 1. PRE-ALERTA SIMÉTRICA
+        # 1. PRE-ALERTA SIMÉTRICA (Detecta impulsos al alza y a la baja)
         # -------------------------------------------------------------
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
+            
+            # Límites simétricos respecto al centro (50%):
+            # SUBIDA (CALL): RSI <= 45 o Estocástico <= 35
+            # BAJADA (PUT):  RSI >= 55 o Estocástico >= 65
             prediccion_subida = (rsi_actual <= 45) or (stoch_actual <= 35)
             prediccion_bajada = (rsi_actual >= 55) or (stoch_actual >= 65)
 
@@ -165,7 +168,7 @@ def analyze():
 
 # ===== INICIALIZACIÓN =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para {SYMBOL}.</i>")
+send_telegram("🚀 <b>Bot Activo</b>\n<i>Filtro simétrico configurado para detectar subidas (CALL) y bajadas (PUT).</i>")
 
 while True:
     analyze()
