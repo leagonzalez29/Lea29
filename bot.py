@@ -86,7 +86,7 @@ def edit_telegram(message_id, message):
     print(f"Error editando Telegram: {e}", flush=True)
 
 
-# ===== DATOS DE MERCADO (VELAS DE 1 MINUTO REALES) =====
+# ===== DATOS DE MERCADO (VELAS REALES DE 1 MINUTO) =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -113,13 +113,13 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== ANÁLISIS VELA A VELA (M1) DE ALTA PROBABILIDAD =====
+# ===== PROYECCIÓN REAL MINUTO A MINUTO (M1) =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 50:
     return []
 
-  # Indicadores ajustados a M1
+  # Calculamos indicadores sobre el conjunto de velas de 1 min
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
@@ -127,54 +127,47 @@ def proyectar_horarios():
   bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
   bb_high = bb.bollinger_hband()
   bb_low = bb.bollinger_lband()
-  ema_50 = ta.trend.ema_indicator(close=df["close"], window=50)
 
   ahora = datetime.now(TIMEZONE_LOCAL)
   candidatos = []
 
   total_minutos = HORAS_PROYECCION * 60
 
-  # Recorremos minuto a minuto (pasos de 1m)
+  # Evaluación secuencial minuto a minuto exacto (1, 2, 3, 4, 5...)
   for m in range(2, total_minutos, 1):
-    # Evaluación sobre el histórico de velas de 1m
-    idx = -(m % 15) - 1
+    # Tomamos directamente el estado actual de la última vela cerrada (-1)
+    rsi_val = rsi_series.iloc[-1]
+    stoch_val = stoch_series.iloc[-1]
+    close_val = df["close"].iloc[-1]
+    open_val = df["open"].iloc[-1]
+    bb_h_val = bb_high.iloc[-1]
+    bb_l_val = bb_low.iloc[-1]
 
-    rsi_val = rsi_series.iloc[idx]
-    stoch_val = stoch_series.iloc[idx]
-    close_val = df["close"].iloc[idx]
-    open_val = df["open"].iloc[idx]
-    bb_h_val = bb_high.iloc[idx]
-    bb_l_val = bb_low.iloc[idx]
-    ema_val = ema_50.iloc[idx]
-
-    if pd.isna(rsi_val) or pd.isna(stoch_val) or pd.isna(ema_val):
+    if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
     score_venta = 0
     score_compra = 0
 
-    # Condición VENTA M1 (Sobrecompra en 1 min + Vela Roja + Tendencia)
-    if rsi_val >= 68: score_venta += 1
-    if stoch_val >= 78: score_venta += 1
+    # Condición VENTA M1
+    if rsi_val >= 65: score_venta += 1
+    if stoch_val >= 75: score_venta += 1
     if close_val >= bb_h_val: score_venta += 1
     if close_val < open_val: score_venta += 1
-    if close_val < ema_val: score_venta += 1
 
-    # Condición COMPRA M1 (Sobreventa en 1 min + Vela Verde + Tendencia)
-    if rsi_val <= 32: score_compra += 1
-    if stoch_val <= 22: score_compra += 1
+    # Condición COMPRA M1
+    if rsi_val <= 35: score_compra += 1
+    if stoch_val <= 25: score_compra += 1
     if close_val <= bb_l_val: score_compra += 1
     if close_val > open_val: score_compra += 1
-    if close_val > ema_val: score_compra += 1
 
     direccion = None
     probabilidad = 0
 
-    # Mínimo 3 confluencias de confirmación
-    if score_venta >= 3 and score_venta > score_compra:
+    if score_venta >= 2 and score_venta > score_compra:
       direccion = "ABAJO"
       probabilidad = score_venta
-    elif score_compra >= 3 and score_compra > score_venta:
+    elif score_compra >= 2 and score_compra > score_venta:
       direccion = "ARRIBA"
       probabilidad = score_compra
 
@@ -193,10 +186,7 @@ def proyectar_horarios():
           "precio_salida": None,
       })
 
-  # Ordenar por máxima confluencia técnica
-  candidatos.sort(key=lambda x: x["probabilidad"], reverse=True)
-
-  # Filtrar para dejar al menos 3 minutos entre cada señal de 1 minuto
+  # Filtramos para seleccionar únicamente entre 7 y 10 señales
   senales_filtradas = []
   for cand in candidatos:
     if len(senales_filtradas) >= MAX_SENALES:
@@ -204,25 +194,25 @@ def proyectar_horarios():
 
     colision = False
     for sen in senales_filtradas:
-      if abs(cand["minuto_offset"] - sen["minuto_offset"]) < 3:
+      # Garantiza al menos 2 minutos libres entre señales en M1
+      if abs(cand["minuto_offset"] - sen["minuto_offset"]) < 2:
         colision = True
         break
 
     if not colision:
       senales_filtradas.append(cand)
 
-  # Ordenar por hora cronológica de envío
   senales_filtradas.sort(key=lambda x: x["hora_entrada"])
   return senales_filtradas
 
 
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "🎯 <b>SEÑALES M1 ALTA PROBABILIDAD</b>\n"
+  texto = "🎯 <b>SEÑALES VIP M1 (VELAS DE 1 MINUTO)</b>\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
   texto += f"<b>PROFIT: {GANANCIAS} ✅ - {PERDIDAS} ❌</b>\n\n"
 
   if not LISTA_SENALES:
-    texto += "<i>Buscando patrones M1 con alta confluencia...</i>\n"
+    texto += "<i>Analizando mercado en velas de 1 min...</i>\n"
 
   for s in LISTA_SENALES:
     marca = ""
