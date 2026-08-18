@@ -1,9 +1,9 @@
-from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
@@ -11,7 +11,7 @@ import ta
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== CONFIGURACIÓN =====
+# ===== CONFIGURACIÓN Y VARIABLES DE ENTORNO =====
 TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 )
@@ -20,9 +20,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
-HORAS_PROYECCION = 2  # Genera señales para las próximas 2 horas
-
-print(f"--- BOT CATALOGADOR ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
+HORAS_PROYECCION = 2  # Proyección para las próximas 2 horas
 
 session = requests.Session()
 session.headers.update({
@@ -39,13 +37,13 @@ GANANCIAS = 0
 PERDIDAS = 0
 
 
-# ===== SERVIDOR HEALTH CHECK (RENDER) =====
+# ===== SERVIDOR HEALTH CHECK PARA RENDER =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(b"Bot activo")
+    self.wfile.write(b"Bot activo y catalogando")
 
   def do_HEAD(self):
     self.send_response(200)
@@ -61,9 +59,9 @@ def run_health_server():
   server.serve_forever()
 
 
-# ===== FUNCIONES TELEGRAM (ENVÍO Y EDICIÓN) =====
+# ===== FUNCIONES DE CONEXIÓN A TELEGRAM =====
 def send_telegram(message):
-  """Envía un mensaje y retorna su message_id."""
+  """Envía un mensaje nuevo y retorna el message_id para poder editarlo después."""
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
   try:
@@ -73,12 +71,12 @@ def send_telegram(message):
     else:
       print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
   except Exception as e:
-    print(f"Error Telegram: {e}", flush=True)
+    print(f"Error enviando mensaje a Telegram: {e}", flush=True)
   return None
 
 
 def edit_telegram(message_id, message):
-  """Edita un mensaje existente en Telegram."""
+  """Actualiza el mensaje existente en Telegram con los resultados en vivo."""
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
   payload = {
       "chat_id": CHAT_ID,
@@ -89,10 +87,10 @@ def edit_telegram(message_id, message):
   try:
     session.post(url, data=payload, timeout=10)
   except Exception as e:
-    print(f"Error al editar mensaje en Telegram: {e}", flush=True)
+    print(f"Error editando mensaje en Telegram: {e}", flush=True)
 
 
-# ===== OBTENER DATOS DE MERCADO =====
+# ===== OBTENCIÓN DE DATOS DE MERCADO =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -118,9 +116,9 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERAR PANEL CATALOGADO Y PROYECCIÓN =====
+# ===== GENERACIÓN Y PROYECCIÓN DE SEÑALES (PUNTOS ALTOS Y BAJOS) =====
 def proyectar_horarios():
-  """Genera las señales probabilísticas/técnicas para el bloque de tiempo."""
+  """Genera el bloque proyectado identificando techos y suelos."""
   df = get_market_data()
   if len(df) < 30:
     return []
@@ -130,44 +128,54 @@ def proyectar_horarios():
       df["high"], df["low"], df["close"], window=14
   )
 
+  bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
+  bb_high = bb.bollinger_hband()
+  bb_low = bb.bollinger_lband()
+
   ahora = datetime.now(TIMEZONE_LOCAL)
   senales_programadas = []
 
-  # Iteración proyectada para las próximas N horas
   total_minutos = HORAS_PROYECCION * 60
-  intervalo = (
-      6  # Evalúa patrones cada 6 minutos aproximadamente dentro del bloque
-  )
+  intervalo = 6  # Espaciado de 6 minutos entre operaciones
 
   for m in range(2, total_minutos, intervalo):
-    # Calculamos indicadores históricos desplazados como patrón de referencia
-    idx = -(m % 20) - 1
+    idx = -(m % 25) - 1
+
     rsi_val = rsi_series.iloc[idx]
     stoch_val = stoch_series.iloc[idx]
+    close_val = df["close"].iloc[idx]
+    bb_h_val = bb_high.iloc[idx]
+    bb_l_val = bb_low.iloc[idx]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    es_call = (rsi_val <= 42) or (stoch_val <= 30)
-    es_put = (rsi_val >= 58) or (stoch_val >= 70)
+    # PUNTO ALTO / TECHO = VENDER (ABAJO)
+    es_punto_alto = (
+        (rsi_val >= 60) or (stoch_val >= 70) or (close_val >= bb_h_val)
+    )
 
-    if es_call and not es_put:
-      direccion = "ABAJO" if m % 2 == 0 else "ARRIBA"  # Dirección esperada
-    elif es_put and not es_call:
+    # PUNTO BAJO / SUELO = COMPRAR (ARRIBA)
+    es_punto_bajo = (
+        (rsi_val <= 40) or (stoch_val <= 30) or (close_val <= bb_l_val)
+    )
+
+    if es_punto_alto and not es_punto_bajo:
       direccion = "ABAJO"
+    elif es_punto_bajo and not es_punto_alto:
+      direccion = "ARRIBA"
     else:
-      direccion = "ARRIBA" if (m // intervalo) % 2 == 0 else "ABAJO"
+      # Alternancia dinámica si se encuentra en zona neutra
+      direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
 
     hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)  # Temporalidad M1
+    hora_salida = hora_entrada + timedelta(minutes=1)
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
         "hora_salida": hora_salida.strftime("%H:%M"),
-        "datetime_entrada": hora_entrada,
-        "datetime_salida": hora_salida,
         "direccion": direccion,
-        "estado": "PENDIENTE",  # PENDIENTE, POSI, NEGA
+        "estado": "PENDIENTE",
         "precio_entrada": None,
         "precio_salida": None,
     })
@@ -175,8 +183,8 @@ def proyectar_horarios():
   return senales_programadas
 
 
+# ===== CONSTRUCTO DE LA PLANTILLA VISUAL =====
 def construir_mensaje_panel(entrada_activa=None):
-  """Construye el formato visual de la lista de señales."""
   texto = "OPERACIONES : 🟢🔴\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
   texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
@@ -204,7 +212,7 @@ def construir_mensaje_panel(entrada_activa=None):
   return texto
 
 
-# ===== EVALUADOR EN TIEMPO REAL =====
+# ===== BUCLE DE VERIFICACIÓN Y EVALUACIÓN =====
 def procesar_catalogador():
   global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
 
@@ -235,7 +243,6 @@ def procesar_catalogador():
       operacion_en_curso = s
       actualizar_panel = True
 
-    # Si está corriendo una operación en el minuto actual, la pasamos para destacarla en la plantilla
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -243,7 +250,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # 2. EVALUAR SALIDA Y MARCAR RESULTADO (POSI / ❌)
+    # 2. EVALUAR RESULTADO
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -252,7 +259,6 @@ def procesar_catalogador():
 
       s["precio_salida"] = precio_actual
 
-      # Lógica de Ganada/Perdida
       if s["direccion"] == "ARRIBA":
         ganada = s["precio_salida"] > s["precio_entrada"]
       else:
@@ -266,39 +272,39 @@ def procesar_catalogador():
         PERDIDAS += 1
 
       print(
-          f"[{hora_actual_str}] Operación finalizada: {s['estado']} | Ent:"
-          f" {s['precio_entrada']} -> Sal: {s['precio_salida']}",
+          f"[{hora_actual_str}] Operación finalizada: {s['estado']} | Entrada:"
+          f" {s['precio_entrada']} -> Salida: {s['precio_salida']}",
           flush=True,
       )
       actualizar_panel = True
 
-  # Si hubo algún cambio de estado, actualizamos el mensaje único en Telegram
   if actualizar_panel and PANEL_MESSAGE_ID:
     nuevo_texto = construir_mensaje_panel(operacion_en_curso)
     edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
 
 
-# ===== BUCLE PRINCIPAL =====
+# ===== ARRANQUE DEL BOT =====
 if __name__ == "__main__":
+  # Iniciar servidor Web en segundo plano (Render)
   threading.Thread(target=run_health_server, daemon=True).start()
 
-  # 1. Generar la lista inicial
+  # Crear y publicar bloque de señales inicial
   LISTA_SENALES = proyectar_horarios()
 
-  # 2. Publicar el panel oficial en Telegram
   if LISTA_SENALES:
     msg_inicial = construir_mensaje_panel()
     PANEL_MESSAGE_ID = send_telegram(msg_inicial)
     print(
-        f"Panel publicado exitosamente con Message ID: {PANEL_MESSAGE_ID}",
+        f"--- PANEL PUBLICADO CORRECTAMENTE (ID: {PANEL_MESSAGE_ID}) ---",
         flush=True,
     )
 
-  # 3. Monitorear el reloj constantemente
+  # Monitoreo del reloj continuo
   while True:
     try:
       procesar_catalogador()
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(5)  # Revisa el mercado y la hora cada 5 segundos
+    time.sleep(5)
+      
