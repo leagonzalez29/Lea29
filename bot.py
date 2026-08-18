@@ -17,9 +17,8 @@ TELEGRAM_TOKEN = os.environ.get(
 )
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# Datos del encabezado (Replicando la plantilla de la imagen)
 PAR_NAME = "STOCKITY - CRYPTO IDX"
-SYMBOL_YAHOO = "BTC-USD"  # Base de cálculo
+SYMBOL_YAHOO = "BTC-USD"  # Par base para lectura técnica
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 HORAS_PROYECCION = 2
 
@@ -112,7 +111,7 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERACIÓN DE LISTA EN VELAS DE 1 MINUTO =====
+# ===== GENERACIÓN DE LISTA EN VELAS DE 1 MINUTO CONTINUAS =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
@@ -128,22 +127,22 @@ def proyectar_horarios():
 
   total_minutos = HORAS_PROYECCION * 60
 
-  # Recorrido de minutos para generar lista de 1 min
-  for m in range(2, total_minutos, 4):
+  # PASO DE 1 MINUTO EXACTO (SIN SALTOS)
+  for m in range(1, total_minutos, 1):
     rsi_val = rsi_series.iloc[-1]
     stoch_val = stoch_series.iloc[-1]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    # Dirección basada en lectura técnica
+    # Dirección basada en velas M1
     if rsi_val >= 50 or stoch_val >= 50:
       direccion = "ABAJO"
     else:
       direccion = "ARRIBA"
 
     hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # VELA EXACTA DE 1 MINUTO
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -157,7 +156,7 @@ def proyectar_horarios():
   return senales_programadas
 
 
-# ===== CONSTRUCCIÓN DEL PANEL EN TELEGRAM (FORMATO EXACTO A LA IMAGEN) =====
+# ===== CONSTRUCCIÓN DEL PANEL FLOTANTE EN TELEGRAM =====
 def construir_mensaje_panel(entrada_activa=None):
   texto = "<b>OPERACIONES : ✅❌</b>\n"
   texto += f"<b>{PAR_NAME}</b>\n"
@@ -204,7 +203,7 @@ def procesar_catalogador():
   operacion_en_curso = None
 
   for s in LISTA_SENALES:
-    # Inicio de operación
+    # Capturar Entrada
     if (
         s["estado"] == "PENDIENTE"
         and s["hora_entrada"] == hora_actual_str
@@ -266,4 +265,5 @@ if __name__ == "__main__":
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(5)
+    time.sleep(3)
+      
