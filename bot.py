@@ -20,7 +20,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
-TOTAL_SENALES_LISTA = 9  # Genera exactamente 9 señales consecutivas de M1
+HORAS_PROYECCION = 2
 
 session = requests.Session()
 session.headers.update({
@@ -29,6 +29,11 @@ session.headers.update({
         " like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 })
+
+PANEL_MESSAGE_ID = None
+LISTA_SENALES = []
+GANANCIAS = 0
+PERDIDAS = 0
 
 
 # ===== SERVIDOR HEALTH CHECK =====
@@ -66,6 +71,20 @@ def send_telegram(message):
   return None
 
 
+def edit_telegram(message_id, message):
+  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+  payload = {
+      "chat_id": CHAT_ID,
+      "message_id": message_id,
+      "text": message,
+      "parse_mode": "HTML",
+  }
+  try:
+    session.post(url, data=payload, timeout=10)
+  except Exception as e:
+    print(f"Error editando Telegram: {e}", flush=True)
+
+
 # ===== DATOS DE MERCADO =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
@@ -82,7 +101,6 @@ def get_market_data():
     quote = result[0].get("indicators", {}).get("quote", [{}])[0]
     df = pd.DataFrame({
         "timestamp": result[0].get("timestamp", []),
-        "open": quote.get("open", []),
         "high": quote.get("high", []),
         "low": quote.get("low", []),
         "close": quote.get("close", []),
@@ -93,8 +111,8 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERADOR DE LISTA PROGRAMADA M1 =====
-def generar_lista_programada():
+# ===== DETECCIÓN DE PUNTOS ALTOS Y BAJOS =====
+def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
     return []
@@ -104,112 +122,162 @@ def generar_lista_programada():
       df["high"], df["low"], df["close"], window=14
   )
 
-  ahora = datetime.now(TIMEZONE_LOCAL) + timedelta(minutes=1)
-  lista_senales = []
+  bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
+  bb_high = bb.bollinger_hband()
+  bb_low = bb.bollinger_lband()
 
-  rsi_val = rsi_series.iloc[-1]
-  stoch_val = stoch_series.iloc[-1]
+  ahora = datetime.now(TIMEZONE_LOCAL)
+  senales_programadas = []
 
-  # Determina dirección predominante según indicadores
-  if rsi_val <= 45 or stoch_val <= 30:
-    tipo_global = "CALL"
-  elif rsi_val >= 55 or stoch_val >= 70:
-    tipo_global = "PUT"
-  else:
-    tipo_global = "CALL"
+  total_minutos = HORAS_PROYECCION * 60
+  intervalo = 6
 
-  # Crea minutos 1 a 1 sin saltos de 5 minutos (14:09, 14:10, 14:11...)
-  for i in range(TOTAL_SENALES_LISTA):
-    hora_op = ahora + timedelta(minutes=i)
-    lista_senales.append({
-        "hora": hora_op.strftime("%H:%M"),
-        "hora_full": hora_op.strftime("%H:%M:00"),
-        "tipo": tipo_global,
-        "rsi": round(rsi_val, 2),
-        "stoch": round(stoch_val, 2),
+  for m in range(2, total_minutos, intervalo):
+    idx = -(m % 25) - 1
+
+    rsi_val = rsi_series.iloc[idx]
+    stoch_val = stoch_series.iloc[idx]
+    close_val = df["close"].iloc[idx]
+    bb_h_val = bb_high.iloc[idx]
+    bb_l_val = bb_low.iloc[idx]
+
+    if pd.isna(rsi_val) or pd.isna(stoch_val):
+      continue
+
+    es_punto_alto = (
+        (rsi_val >= 60) or (stoch_val >= 70) or (close_val >= bb_h_val)
+    )
+
+    es_punto_bajo = (
+        (rsi_val <= 40) or (stoch_val <= 30) or (close_val <= bb_l_val)
+    )
+
+    if es_punto_alto and not es_punto_bajo:
+      direccion = "ABAJO"
+    elif es_punto_bajo and not es_punto_alto:
+      direccion = "ARRIBA"
+    else:
+      direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
+
+    hora_entrada = ahora + timedelta(minutes=m)
+    hora_salida = hora_entrada + timedelta(minutes=1)
+
+    senales_programadas.append({
+        "hora_entrada": hora_entrada.strftime("%H:%M"),
+        "hora_salida": hora_salida.strftime("%H:%M"),
+        "direccion": direccion,
+        "estado": "PENDIENTE",
+        "precio_entrada": None,
+        "precio_salida": None,
     })
 
-  return lista_senales
+  return senales_programadas
 
 
-def enviar_mensaje_lista(lista):
-  texto = "📋 <b>LISTA DE SEÑALES PROGRAMADAS</b>\n\n"
-  for s in lista:
-    texto += f"<code>M1  {SYMBOL_DISPLAY}  {s['hora']}  {s['tipo']}</code>\n"
-  send_telegram(texto)
+def construir_mensaje_panel(entrada_activa=None):
+  texto = "OPERACIONES : 🟢🔴\n"
+  texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
+  texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
+
+  for s in LISTA_SENALES:
+    marca = ""
+    if s["estado"] == "POSI":
+      marca = " POSI ✅"
+    elif s["estado"] == "NEGA":
+      marca = " ❌"
+
+    texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
+
+  if entrada_activa:
+    emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
+    tipo_op = "COMPRA" if entrada_activa["direccion"] == "ARRIBA" else "VENTA"
+    texto += (
+        f"\n🔴 <b>{tipo_op} | {entrada_activa['direccion']} {emoji_dir}</b>\n"
+    )
+    texto += (
+        f"Entrada: {entrada_activa['hora_entrada']} Salida:"
+        f" {entrada_activa['hora_salida']}"
+    )
+
+  return texto
 
 
-def enviar_pre_alerta(senal):
-  emoji = "🟢" if senal["tipo"] == "CALL" else "🔴"
-  accion = "SUBIRÁ (CALL)" if senal["tipo"] == "CALL" else "BAJARÁ (PUT)"
+def procesar_catalogador():
+  global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
 
-  texto = "⚡ <b>PRE-ALERTA: BTC-USD</b>\n\n"
-  texto += f"🔮 <b>Proyección: {accion} {emoji}</b>\n"
-  texto += f"⏰ <b>ENTRADA: {senal['hora_full']}</b>\n"
-  texto += f"📉 <b>RSI: {senal['rsi']} | Stoch: {senal['stoch']}</b>"
-  send_telegram(texto)
+  ahora = datetime.now(TIMEZONE_LOCAL)
+  hora_actual_str = ahora.strftime("%H:%M")
+  df = get_market_data()
 
+  if df.empty:
+    return
 
-def enviar_vela_cerrada(close_price, rsi_val, stoch_val, tipo):
-  emoji = "🟢" if tipo == "CALL" else "🔴"
-  accion = "(SUBIDA)" if tipo == "CALL" else "(BAJADA)"
+  precio_actual = df.iloc[-1]["close"]
+  actualizar_panel = False
+  operacion_en_curso = None
 
-  texto = "🕯️ <b>VELA M1 CERRADA</b>\n\n"
-  texto += f"📈 <b>Par: {SYMBOL_DISPLAY}</b>\n"
-  texto += f"📊 <b>Cierre: {close_price}</b>\n"
-  texto += f"📉 <b>RSI: {round(rsi_val, 2)} | Stoch: {round(stoch_val, 2)}</b>\n"
-  texto += f"🎯 <b>Estado: {tipo} {emoji} {accion}</b>"
-  send_telegram(texto)
+  for s in LISTA_SENALES:
+    # Capturar Entrada
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["hora_entrada"] == hora_actual_str
+        and s["precio_entrada"] is None
+    ):
+      s["precio_entrada"] = precio_actual
+      operacion_en_curso = s
+      actualizar_panel = True
+
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["precio_entrada"] is not None
+        and s["hora_salida"] >= hora_actual_str
+    ):
+      operacion_en_curso = s
+
+    # Evaluar Salida
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["precio_entrada"] is not None
+        and hora_actual_str >= s["hora_salida"]
+    ):
+      s["precio_salida"] = precio_actual
+
+      if s["direccion"] == "ARRIBA":
+        ganada = s["precio_salida"] > s["precio_entrada"]
+      else:
+        ganada = s["precio_salida"] < s["precio_entrada"]
+
+      if ganada:
+        s["estado"] = "POSI"
+        GANANCIAS += 1
+      else:
+        s["estado"] = "NEGA"
+        PERDIDAS += 1
+
+      actualizar_panel = True
+
+  if actualizar_panel and PANEL_MESSAGE_ID:
+    nuevo_texto = construir_mensaje_panel(operacion_en_curso)
+    edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
 
 
 # ===== BUCLE PRINCIPAL =====
 if __name__ == "__main__":
   threading.Thread(target=run_health_server, daemon=True).start()
 
-  send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY}</b>")
+  LISTA_SENALES = proyectar_horarios()
 
-  lista_actual = generar_lista_programada()
-  if lista_actual:
-    enviar_mensaje_lista(lista_actual)
-
-  alertas_enviadas = set()
-  velas_procesadas = set()
+  if LISTA_SENALES:
+    msg_inicial = construir_mensaje_panel()
+    PANEL_MESSAGE_ID = send_telegram(msg_inicial)
+    if PANEL_MESSAGE_ID:
+      print(f"--- PANEL PUBLICADO CORRECTAMENTE (ID: {PANEL_MESSAGE_ID}) ---", flush=True)
 
   while True:
     try:
-      ahora = datetime.now(TIMEZONE_LOCAL)
-      hora_actual_sec = ahora.strftime("%H:%M:%S")
-      hora_actual_min = ahora.strftime("%H:%M")
-
-      # 1. Enviar Pre-Alerta unos segundos antes de la entrada M1
-      for s in lista_actual:
-        if (
-            s["hora"] == hora_actual_min
-            and s["hora"] not in alertas_enviadas
-            and ahora.second <= 10
-        ):
-          enviar_pre_alerta(s)
-          alertas_enviadas.add(s["hora"])
-
-      # 2. Notificar Vela M1 Cerrada al cambiar el minuto
-      if ahora.second == 2 and hora_actual_min not in velas_procesadas:
-        df = get_market_data()
-        if not df.empty:
-          rsi_series = ta.momentum.rsi(close=df["close"], window=14)
-          stoch_series = ta.momentum.stoch(
-              df["high"], df["low"], df["close"], window=14
-          )
-
-          cierre = df.iloc[-1]["close"]
-          rsi_val = rsi_series.iloc[-1]
-          stoch_val = stoch_series.iloc[-1]
-
-          tipo_estado = "CALL" if rsi_val <= 50 else "PUT"
-          enviar_vela_cerrada(cierre, rsi_val, stoch_val, tipo_estado)
-          velas_procesadas.add(hora_actual_min)
-
+      procesar_catalogador()
     except Exception as e:
-      print(f"Error en bucle: {e}", flush=True)
+      print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(1)
-    
+    time.sleep(5)
+      
