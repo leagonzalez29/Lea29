@@ -21,6 +21,7 @@ SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 HORAS_PROYECCION = 2
+MAX_SENALES = 8  # Límite estricto de señales de alta probabilidad (7 a 10)
 
 session = requests.Session()
 session.headers.update({
@@ -112,29 +113,31 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== LÓGICA DE PROYECCIÓN CADA 1 MINUTO =====
+# ===== ANÁLISIS TÉCNICO DE ALTA PROBABILIDAD =====
 def proyectar_horarios():
   df = get_market_data()
-  if len(df) < 30:
+  if len(df) < 50:
     return []
 
+  # Calculamos indicadores clave
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
   )
-
   bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
   bb_high = bb.bollinger_hband()
   bb_low = bb.bollinger_lband()
+  
+  # Media Móvil Exponencial de 50 periodos para filtro de tendencia principal
+  ema_50 = ta.trend.ema_indicator(close=df["close"], window=50)
 
   ahora = datetime.now(TIMEZONE_LOCAL)
-  senales_programadas = []
+  candidatos = []
 
   total_minutos = HORAS_PROYECCION * 60
-  intervalo = 1  # Señales continuas minuto a minuto
 
-  for m in range(2, total_minutos, intervalo):
-    idx = -(m % 20) - 1
+  for m in range(3, total_minutos):
+    idx = -(m % 30) - 1
 
     rsi_val = rsi_series.iloc[idx]
     stoch_val = stoch_series.iloc[idx]
@@ -142,42 +145,84 @@ def proyectar_horarios():
     open_val = df["open"].iloc[idx]
     bb_h_val = bb_high.iloc[idx]
     bb_l_val = bb_low.iloc[idx]
+    ema_val = ema_50.iloc[idx]
 
-    if pd.isna(rsi_val) or pd.isna(stoch_val):
+    if pd.isna(rsi_val) or pd.isna(stoch_val) or pd.isna(ema_val):
       continue
 
-    vela_bajista = close_val < open_val
-    vela_alcista = close_val > open_val
+    score_venta = 0
+    score_compra = 0
 
-    es_punto_alto = (rsi_val >= 65 or stoch_val >= 75 or close_val >= bb_h_val) and vela_bajista
-    es_punto_bajo = (rsi_val <= 35 or stoch_val <= 25 or close_val <= bb_l_val) and vela_alcista
+    # Condición de VENTA (Punto Alto / Sobrecompra Estricta)
+    if rsi_val >= 68: score_venta += 1
+    if stoch_val >= 78: score_venta += 1
+    if close_val >= bb_h_val: score_venta += 1
+    if close_val < open_val: score_venta += 1  # Confirmación de vela bajista
+    if close_val < ema_val: score_venta += 1    # A favor de la tendencia general
 
-    if es_punto_alto and not es_punto_bajo:
+    # Condición de COMPRA (Punto Bajo / Sobreventa Estricta)
+    if rsi_val <= 32: score_compra += 1
+    if stoch_val <= 22: score_compra += 1
+    if close_val <= bb_l_val: score_compra += 1
+    if close_val > open_val: score_compra += 1  # Confirmación de vela alcista
+    if close_val > ema_val: score_compra += 1    # A favor de la tendencia general
+
+    direccion = None
+    probabilidad = 0
+
+    # Exigimos al menos 3 coincidencias de indicadores para considerar la señal válida
+    if score_venta >= 3 and score_venta > score_compra:
       direccion = "ABAJO"
-    elif es_punto_bajo and not es_punto_alto:
+      probabilidad = score_venta
+    elif score_compra >= 3 and score_compra > score_venta:
       direccion = "ARRIBA"
-    else:
-      direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
+      probabilidad = score_compra
 
-    hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)
+    if direccion:
+      hora_entrada = ahora + timedelta(minutes=m)
+      hora_salida = hora_entrada + timedelta(minutes=1)
 
-    senales_programadas.append({
-        "hora_entrada": hora_entrada.strftime("%H:%M"),
-        "hora_salida": hora_salida.strftime("%H:%M"),
-        "direccion": direccion,
-        "estado": "PENDIENTE",
-        "precio_entrada": None,
-        "precio_salida": None,
-    })
+      candidatos.append({
+          "hora_entrada": hora_entrada.strftime("%H:%M"),
+          "hora_salida": hora_salida.strftime("%H:%M"),
+          "direccion": direccion,
+          "probabilidad": probabilidad,
+          "minuto_offset": m,
+          "estado": "PENDIENTE",
+          "precio_entrada": None,
+          "precio_salida": None,
+      })
 
-  return senales_programadas
+  # Ordenamos por mayor puntaje técnico (probabilidad)
+  candidatos.sort(key=lambda x: x["probabilidad"], reverse=True)
+
+  # Filtramos para evitar entradas en minutos pegados (al menos 5 min de separación entre operaciones)
+  senales_filtradas = []
+  for cand in candidatos:
+    if len(senales_filtradas) >= MAX_SENALES:
+      break
+
+    colision = False
+    for sen in senales_filtradas:
+      if abs(cand["minuto_offset"] - sen["minuto_offset"]) < 5:
+        colision = True
+        break
+
+    if not colision:
+      senales_filtradas.append(cand)
+
+  # Ordenamos por hora de ejecución
+  senales_filtradas.sort(key=lambda x: x["hora_entrada"])
+  return senales_filtradas
 
 
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "OPERACIONES M1 : 🟢🔴\n"
+  texto = "🎯 <b>SEÑALES VIP M1 (ALTA PROBABILIDAD)</b>\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
-  texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
+  texto += f"<b>PROFIT: {GANANCIAS} ✅ - {PERDIDAS} ❌</b>\n\n"
+
+  if not LISTA_SENALES:
+    texto += "<i>Buscando confirmaciones de alta probabilidad...</i>\n"
 
   for s in LISTA_SENALES:
     marca = ""
@@ -186,7 +231,8 @@ def construir_mensaje_panel(entrada_activa=None):
     elif s["estado"] == "NEGA":
       marca = " ❌"
 
-    texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
+    emoji_dir = "⬆️" if s["direccion"] == "ARRIBA" else "⬇️"
+    texto += f"<code>{s['hora_entrada']} - {s['direccion']} {emoji_dir}{marca}</code>\n"
 
   if entrada_activa:
     emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
@@ -278,3 +324,4 @@ if __name__ == "__main__":
       print(f"Error en bucle principal: {e}", flush=True)
 
     time.sleep(3)
+      
