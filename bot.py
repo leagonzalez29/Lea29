@@ -112,13 +112,12 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== LÓGICA DE PROYECCIÓN EN VELA DE 1 MINUTO =====
+# ===== LÓGICA DE PROYECCIÓN CADA 1 MINUTO =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
     return []
 
-  # Cálculo de indicadores técnicos base para vela de 1m
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
@@ -132,7 +131,7 @@ def proyectar_horarios():
   senales_programadas = []
 
   total_minutos = HORAS_PROYECCION * 60
-  intervalo = 5  # Evaluación cada 5 velas de 1 min
+  intervalo = 1  # Señales continuas minuto a minuto
 
   for m in range(2, total_minutos, intervalo):
     idx = -(m % 20) - 1
@@ -147,11 +146,9 @@ def proyectar_horarios():
     if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    # Evaluación de la vela de 1 minuto (verde o roja)
     vela_bajista = close_val < open_val
     vela_alcista = close_val > open_val
 
-    # Puntos de Giro / Acción de Precio en M1
     es_punto_alto = (rsi_val >= 65 or stoch_val >= 75 or close_val >= bb_h_val) and vela_bajista
     es_punto_bajo = (rsi_val <= 35 or stoch_val <= 25 or close_val <= bb_l_val) and vela_alcista
 
@@ -163,7 +160,7 @@ def proyectar_horarios():
       direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
 
     hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela de expiratória de 1m
+    hora_salida = hora_entrada + timedelta(minutes=1)
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -237,7 +234,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida al finalizar el minuto
+    # Evaluar Salida
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -280,5 +277,4 @@ if __name__ == "__main__":
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(3)  # Muestreo cada 3 segundos para mayor precisión en 1m
-    
+    time.sleep(3)
