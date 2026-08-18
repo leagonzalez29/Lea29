@@ -15,7 +15,6 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# BTC-USD para garantizar oscilaciones constantes 24/7
 SYMBOL = "BTC-USD" 
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
@@ -84,7 +83,7 @@ def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     try:
         df = get_market_data()
-        if len(df) < 20: return
+        if len(df) < 30: return  # Mínimo 30 períodos para cálculo estable del indicador
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
@@ -96,7 +95,11 @@ def analyze():
         rsi_actual = rsi_series.iloc[-1]
         stoch_actual = stoch_k.iloc[-1]
 
-        # 1. PRE-ALERTA (Segundo 25 a 45) - SENSIBILIDAD OPTIMIZADA
+        # Validar que los indicadores contengan valores numéricos
+        if pd.isna(rsi_actual) or pd.isna(stoch_actual):
+            return
+
+        # 1. PRE-ALERTA (Segundo 25 a 45)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             pre_call = (rsi_actual <= 40) or (stoch_actual <= 30)
             pre_put = (rsi_actual >= 60) or (stoch_actual >= 70)
@@ -114,14 +117,16 @@ def analyze():
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # 2. CAMBIO DE VELA M1 - SENSIBILIDAD OPTIMIZADA
+        # 2. CAMBIO DE VELA M1
         closed_timestamp = df.iloc[-2]['timestamp']
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
             closed_rsi = rsi_series.iloc[-2]
             closed_stoch = stoch_k.iloc[-2]
+
+            if pd.isna(closed_rsi) or pd.isna(closed_stoch):
+                return
             
-            # Se activará si cualquiera de los dos toca la zona de oportunidad
             es_call = (closed_rsi <= 38) or (closed_stoch <= 25)
             es_put = (closed_rsi >= 62) or (closed_stoch >= 75)
             
@@ -136,11 +141,12 @@ def analyze():
             send_telegram(msg)
 
     except Exception as e:
-        print(f"Error: {e}", flush=True)
+        print(f"Error en ejecución: {e}", flush=True)
 
 # ===== INICIO =====
 threading.Thread(target=run_health_server, daemon=True).start()
 send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL}</b>")
+
 while True:
     analyze()
-    time.sleep(5)
+    time.sleep(2)  # Reducido a 2s para capturar la ventana exacta de pre-alerta
