@@ -22,7 +22,7 @@ SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-# Cantidad fija de señales por bloque (entre 7 y 10)
+# Cantidad estricta de señales (entre 7 y 10)
 CANTIDAD_SENALES = random.randint(7, 10)
 
 session = requests.Session()
@@ -114,7 +114,7 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERACIÓN (7 A 10 SEÑALES CON ESPACIADO CORTO DE 1 A 2 MIN) =====
+# ===== GENERACIÓN MINUTO A MINUTO CONTINUO (7 A 10 SEÑALES SEGUIDAS) =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
@@ -128,22 +128,21 @@ def proyectar_horarios():
   ahora = datetime.now(TIMEZONE_LOCAL)
   senales_programadas = []
 
-  minuto_acumulado = 1
-
-  for i in range(CANTIDAD_SENALES):
+  # Genera señales consecutivas minuto a minuto (m = 1, 2, 3...)
+  for m in range(1, CANTIDAD_SENALES + 1):
     rsi_val = rsi_series.iloc[-1]
     stoch_val = stoch_series.iloc[-1]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
-      direccion = "ARRIBA" if (i % 2 == 0) else "ABAJO"
+      direccion = "ARRIBA" if (m % 2 == 0) else "ABAJO"
     else:
       if rsi_val >= 50 or stoch_val >= 50:
         direccion = "ABAJO"
       else:
         direccion = "ARRIBA"
 
-    hora_entrada = ahora + timedelta(minutes=minuto_acumulado)
-    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela M1 (1 minuto)
+    hora_entrada = ahora + timedelta(minutes=m)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela M1 exactamente
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -153,9 +152,6 @@ def proyectar_horarios():
         "precio_entrada": None,
         "precio_salida": None,
     })
-
-    # Espaciado de 1 a 2 minutos entre operaciones
-    minuto_acumulado += random.choice([1, 2])
 
   return senales_programadas
 
@@ -220,7 +216,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida a 1 minuto
+    # Cierre de operación al terminar el minuto
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -266,4 +262,4 @@ if __name__ == "__main__":
       print(f"Error en bucle principal: {e}", flush=True)
 
     time.sleep(3)
-    
+        
