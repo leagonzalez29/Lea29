@@ -85,7 +85,7 @@ def edit_telegram(message_id, message):
     print(f"Error editando Telegram: {e}", flush=True)
 
 
-# ===== DATOS DE MERCADO =====
+# ===== DATOS DE MERCADO (VELAS 1 MINUTO) =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -101,6 +101,7 @@ def get_market_data():
     quote = result[0].get("indicators", {}).get("quote", [{}])[0]
     df = pd.DataFrame({
         "timestamp": result[0].get("timestamp", []),
+        "open": quote.get("open", []),
         "high": quote.get("high", []),
         "low": quote.get("low", []),
         "close": quote.get("close", []),
@@ -111,13 +112,13 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== NUEVA LÓGICA DE DETECCIÓN DE PUNTOS ALTOS Y BAJOS =====
+# ===== LÓGICA DE PROYECCIÓN EN VELA DE 1 MINUTO =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
     return []
 
-  # Calculamos RSI, Estocástico y Bandas de Bollinger para ubicar techos (puntos altos)
+  # Cálculo de indicadores técnicos base para vela de 1m
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
@@ -131,42 +132,38 @@ def proyectar_horarios():
   senales_programadas = []
 
   total_minutos = HORAS_PROYECCION * 60
-  intervalo = 6  # Frecuencia entre evaluaciones
+  intervalo = 5  # Evaluación cada 5 velas de 1 min
 
   for m in range(2, total_minutos, intervalo):
-    # Evaluamos oscilaciones pasadas para proyectar ciclos
-    idx = -(m % 25) - 1
+    idx = -(m % 20) - 1
 
     rsi_val = rsi_series.iloc[idx]
     stoch_val = stoch_series.iloc[idx]
     close_val = df["close"].iloc[idx]
+    open_val = df["open"].iloc[idx]
     bb_h_val = bb_high.iloc[idx]
     bb_l_val = bb_low.iloc[idx]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    # 1. DETECCIÓN DE PUNTO ALTO (TECHO / SOBRECOMPRA) -> ABAJO
-    es_punto_alto = (
-        (rsi_val >= 60) or (stoch_val >= 70) or (close_val >= bb_h_val)
-    )
+    # Evaluación de la vela de 1 minuto (verde o roja)
+    vela_bajista = close_val < open_val
+    vela_alcista = close_val > open_val
 
-    # 2. DETECCIÓN DE PUNTO BAJO (SUELO / SOBREVENTA) -> ARRIBA
-    es_punto_bajo = (
-        (rsi_val <= 40) or (stoch_val <= 30) or (close_val <= bb_l_val)
-    )
+    # Puntos de Giro / Acción de Precio en M1
+    es_punto_alto = (rsi_val >= 65 or stoch_val >= 75 or close_val >= bb_h_val) and vela_bajista
+    es_punto_bajo = (rsi_val <= 35 or stoch_val <= 25 or close_val <= bb_l_val) and vela_alcista
 
-    # Balance de decisiones
     if es_punto_alto and not es_punto_bajo:
       direccion = "ABAJO"
     elif es_punto_bajo and not es_punto_alto:
       direccion = "ARRIBA"
     else:
-      # Alterna dinámicamente si el indicador está en zona neutral
       direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
 
     hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela de expiratória de 1m
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -181,7 +178,7 @@ def proyectar_horarios():
 
 
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "OPERACIONES : 🟢🔴\n"
+  texto = "OPERACIONES M1 : 🟢🔴\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
   texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
 
@@ -198,7 +195,7 @@ def construir_mensaje_panel(entrada_activa=None):
     emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
     tipo_op = "COMPRA" if entrada_activa["direccion"] == "ARRIBA" else "VENTA"
     texto += (
-        f"\n🔴 <b>{tipo_op} | {entrada_activa['direccion']} {emoji_dir}</b>\n"
+        f"\n🔴 <b>{tipo_op} M1 | {entrada_activa['direccion']} {emoji_dir}</b>\n"
     )
     texto += (
         f"Entrada: {entrada_activa['hora_entrada']} Salida:"
@@ -240,13 +237,12 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida
+    # Evaluar Salida al finalizar el minuto
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
         and hora_actual_str >= s["hora_salida"]
     ):
-
       s["precio_salida"] = precio_actual
 
       if s["direccion"] == "ARRIBA":
@@ -284,4 +280,5 @@ if __name__ == "__main__":
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(5)
+    time.sleep(3)  # Muestreo cada 3 segundos para mayor precisión en 1m
+    
