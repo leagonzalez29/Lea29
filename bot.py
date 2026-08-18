@@ -22,7 +22,6 @@ SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-# Cantidad estricta de señales (entre 7 y 10)
 CANTIDAD_SENALES = random.randint(7, 10)
 
 session = requests.Session()
@@ -114,35 +113,45 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERACIÓN MINUTO A MINUTO CONTINUO (7 A 10 SEÑALES SEGUIDAS) =====
+# ===== GENERACIÓN DE SEÑALES MEJORADA CON TENDENCIA Y RSI REAL =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
     return []
 
-  rsi_series = ta.momentum.rsi(close=df["close"], window=14)
-  stoch_series = ta.momentum.stoch(
-      df["high"], df["low"], df["close"], window=14
-  )
+  # Indicadores Técnicos
+  rsi = ta.momentum.rsi(close=df["close"], window=14).iloc[-1]
+  ema_rapida = ta.trend.ema_indicator(close=df["close"], window=9).iloc[-1]
+  ema_lenta = ta.trend.ema_indicator(close=df["close"], window=21).iloc[-1]
 
   ahora = datetime.now(TIMEZONE_LOCAL)
   senales_programadas = []
 
-  # Genera señales consecutivas minuto a minuto (m = 1, 2, 3...)
-  for m in range(1, CANTIDAD_SENALES + 1):
-    rsi_val = rsi_series.iloc[-1]
-    stoch_val = stoch_series.iloc[-1]
+  # Determinar dirección base respetando la tendencia real del mercado
+  if pd.isna(rsi) or pd.isna(ema_rapida) or pd.isna(ema_lenta):
+    direccion_base = "ARRIBA"
+  elif rsi >= 70:
+    direccion_base = "ABAJO"  # Sobrecompra extrema -> Posible reversión
+  elif rsi <= 30:
+    direccion_base = "ARRIBA"  # Sobreventa extrema -> Posible rebote
+  elif ema_rapida > ema_lenta:
+    direccion_base = "ARRIBA"  # Tendencia Alcista -> Operar a favor
+  else:
+    direccion_base = "ABAJO"  # Tendencia Bajista -> Operar a favor
 
-    if pd.isna(rsi_val) or pd.isna(stoch_val):
-      direccion = "ARRIBA" if (m % 2 == 0) else "ABAJO"
+  for m in range(1, CANTIDAD_SENALES + 1):
+    # Si el mercado no está en extremos, varía la proyección manteniendo el sesgo de la tendencia
+    if 30 < rsi < 70:
+      direccion = (
+          direccion_base if m % 3 != 0 else (
+              "ABAJO" if direccion_base == "ARRIBA" else "ARRIBA"
+          )
+      )
     else:
-      if rsi_val >= 50 or stoch_val >= 50:
-        direccion = "ABAJO"
-      else:
-        direccion = "ARRIBA"
+      direccion = direccion_base
 
     hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela M1 exactamente
+    hora_salida = hora_entrada + timedelta(minutes=1)
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -262,4 +271,4 @@ if __name__ == "__main__":
       print(f"Error en bucle principal: {e}", flush=True)
 
     time.sleep(3)
-        
+      
