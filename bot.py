@@ -11,14 +11,15 @@ import ta
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== CONFIGURACIÓN =====
+# ===== CONFIGURACIÓN DE PLANTILLA =====
 TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
 )
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-SYMBOL_YAHOO = "BTC-USD"
-SYMBOL_DISPLAY = "BTC-USD"
+# Datos del encabezado (Replicando la plantilla de la imagen)
+PAR_NAME = "STOCKITY - CRYPTO IDX"
+SYMBOL_YAHOO = "BTC-USD"  # Base de cálculo
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 HORAS_PROYECCION = 2
 
@@ -58,7 +59,7 @@ def run_health_server():
   server.serve_forever()
 
 
-# ===== CONEXIÓN TELEGRAM =====
+# ===== FUNCIONES DE TELEGRAM =====
 def send_telegram(message):
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
@@ -85,7 +86,7 @@ def edit_telegram(message_id, message):
     print(f"Error editando Telegram: {e}", flush=True)
 
 
-# ===== DATOS DE MERCADO =====
+# ===== OBTENCIÓN DE DATOS M1 =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -107,11 +108,11 @@ def get_market_data():
     })
     return df.dropna().reset_index(drop=True)
   except Exception as e:
-    print(f"Error en get_market_data: {e}", flush=True)
+    print(f"Error mercado: {e}", flush=True)
     return pd.DataFrame()
 
 
-# ===== DETECCIÓN DE PUNTOS ALTOS Y BAJOS =====
+# ===== GENERACIÓN DE LISTA EN VELAS DE 1 MINUTO =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
@@ -122,42 +123,24 @@ def proyectar_horarios():
       df["high"], df["low"], df["close"], window=14
   )
 
-  bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
-  bb_high = bb.bollinger_hband()
-  bb_low = bb.bollinger_lband()
-
   ahora = datetime.now(TIMEZONE_LOCAL)
   senales_programadas = []
 
   total_minutos = HORAS_PROYECCION * 60
-  intervalo = 6
 
-  for m in range(2, total_minutos, intervalo):
-    idx = -(m % 25) - 1
-
-    rsi_val = rsi_series.iloc[idx]
-    stoch_val = stoch_series.iloc[idx]
-    close_val = df["close"].iloc[idx]
-    bb_h_val = bb_high.iloc[idx]
-    bb_l_val = bb_low.iloc[idx]
+  # Recorrido de minutos para generar lista de 1 min
+  for m in range(2, total_minutos, 4):
+    rsi_val = rsi_series.iloc[-1]
+    stoch_val = stoch_series.iloc[-1]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    es_punto_alto = (
-        (rsi_val >= 60) or (stoch_val >= 70) or (close_val >= bb_h_val)
-    )
-
-    es_punto_bajo = (
-        (rsi_val <= 40) or (stoch_val <= 30) or (close_val <= bb_l_val)
-    )
-
-    if es_punto_alto and not es_punto_bajo:
+    # Dirección basada en lectura técnica
+    if rsi_val >= 50 or stoch_val >= 50:
       direccion = "ABAJO"
-    elif es_punto_bajo and not es_punto_alto:
-      direccion = "ARRIBA"
     else:
-      direccion = "ARRIBA" if (len(senales_programadas) % 2 == 0) else "ABAJO"
+      direccion = "ARRIBA"
 
     hora_entrada = ahora + timedelta(minutes=m)
     hora_salida = hora_entrada + timedelta(minutes=1)
@@ -174,17 +157,21 @@ def proyectar_horarios():
   return senales_programadas
 
 
+# ===== CONSTRUCCIÓN DEL PANEL EN TELEGRAM (FORMATO EXACTO A LA IMAGEN) =====
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "OPERACIONES : 🟢🔴\n"
-  texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
-  texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
+  texto = "<b>OPERACIONES : ✅❌</b>\n"
+  texto += f"<b>{PAR_NAME}</b>\n"
+  texto += "❌ <b>SIN MG</b> ❌ - - 40k likes\n"
+  texto += "TG: @GRENITAS96\n"
+  texto += "WP: +502 3956 1185\n\n"
+  texto += f"        <b>{GANANCIAS} - {PERDIDAS}  PROFIT :)</b>\n"
 
   for s in LISTA_SENALES:
     marca = ""
     if s["estado"] == "POSI":
-      marca = " POSI ✅"
+      marca = " - POSI ✅"
     elif s["estado"] == "NEGA":
-      marca = " ❌"
+      marca = " - ❌"
 
     texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
 
@@ -217,7 +204,7 @@ def procesar_catalogador():
   operacion_en_curso = None
 
   for s in LISTA_SENALES:
-    # Capturar Entrada
+    # Inicio de operación
     if (
         s["estado"] == "PENDIENTE"
         and s["hora_entrada"] == hora_actual_str
@@ -234,7 +221,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida
+    # Cierre de operación a 1 minuto
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -280,4 +267,3 @@ if __name__ == "__main__":
       print(f"Error en bucle principal: {e}", flush=True)
 
     time.sleep(5)
-      
