@@ -29,7 +29,7 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-# ===== SERVIDOR HEALTH CHECK (REQUERIDO POR RENDER) =====
+# ===== SERVIDOR HEALTH CHECK =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -82,7 +82,45 @@ def get_market_data():
         print(f"Error en get_market_data: {e}", flush=True)
         return pd.DataFrame()
 
-# ===== ANÁLISIS Y NOTIFICACIONES EN TIEMPO REAL =====
+# ===== GENERADOR DE LISTA PROGRAMADA =====
+def generar_lista_senales():
+    df = get_market_data()
+    if len(df) < 30: return
+
+    rsi = ta.momentum.rsi(close=df['close'], window=14)
+    stoch_k = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14)
+
+    ahora = datetime.now(TIMEZONE_LOCAL)
+    senales = []
+
+    # Analizar últimas velas usando EXACTAMENTE los mismos parámetros estrictos
+    for i in range(-15, 0):
+        rsi_val = rsi.iloc[i]
+        stoch_val = stoch_k.iloc[i]
+        
+        if pd.isna(rsi_val) or pd.isna(stoch_val):
+            continue
+
+        # Filtros iguales a las alertas en vivo
+        es_call = (rsi_val <= 38) or (stoch_val <= 25)
+        es_put = (rsi_val >= 62) or (stoch_val >= 75)
+
+        if es_call and not es_put:
+            direccion = "CALL"
+        elif es_put and not es_call:
+            direccion = "PUT"
+        else:
+            continue
+
+        tiempo_senal = ahora + timedelta(minutes=len(senales) + 1)
+        hora_str = tiempo_senal.strftime("%H:%M")
+        senales.append(f"M1  {SYMBOL_DISPLAY}  {hora_str}  {direccion}")
+
+    if senales:
+        mensaje = f"📋 <b>LISTA DE SEÑALES PROGRAMADAS</b>\n\n<code>" + "\n".join(senales) + "</code>"
+        send_telegram(mensaje)
+
+# ===== ANÁLISIS EN TIEMPO REAL =====
 def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     try:
@@ -102,7 +140,7 @@ def analyze():
         if pd.isna(rsi_actual) or pd.isna(stoch_actual):
             return
 
-        # 1. PRE-ALERTA EN TIEMPO REAL (Segundo 25 a 45)
+        # 1. PRE-ALERTA (Segundo 25 a 45)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
             pre_call = (rsi_actual <= 40) or (stoch_actual <= 30)
             pre_put = (rsi_actual >= 60) or (stoch_actual >= 70)
@@ -146,12 +184,15 @@ def analyze():
     except Exception as e:
         print(f"Error en analyze: {e}", flush=True)
 
-# ===== INICIO DE EJECUCIÓN PERMANENTE =====
+# ===== INICIO PERMANENTE =====
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
-    send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY} en Tiempo Real</b>")
+    send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY}</b>")
+    
+    # Se genera la lista inmediatamente al iniciar
+    generar_lista_senales()
 
     while True:
         analyze()
-        time.sleep(3)  # Ajustado a 3s para evaluar el mercado de forma fluida
-        
+        time.sleep(3)
+    
