@@ -20,8 +20,8 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
-HORAS_PROYECCION = 2
-MAX_SENALES = 8  # Límite estricto (entre 7 y 10 señales)
+
+MAX_SENALES_TOTALES = 8  # Límite estricto (máximo 7 a 10 señales por sesión)
 
 session = requests.Session()
 session.headers.update({
@@ -35,6 +35,7 @@ PANEL_MESSAGE_ID = None
 LISTA_SENALES = []
 GANANCIAS = 0
 PERDIDAS = 0
+ULTIMA_HORA_PROCESADA = None
 
 
 # ===== SERVIDOR HEALTH CHECK =====
@@ -86,7 +87,7 @@ def edit_telegram(message_id, message):
     print(f"Error editando Telegram: {e}", flush=True)
 
 
-# ===== DATOS DE MERCADO (VELAS REALES DE 1 MINUTO) =====
+# ===== DATOS DE MERCADO (VELAS DE 1 MINUTO EN TIEMPO REAL) =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -113,13 +114,12 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== PROYECCIÓN REAL MINUTO A MINUTO (M1) =====
-def proyectar_horarios():
+# ===== ANÁLISIS DE LA ÚLTIMA VELA CERRADA DE 1 MINUTO =====
+def analizar_mercado_m1():
   df = get_market_data()
-  if len(df) < 50:
-    return []
+  if len(df) < 30:
+    return None
 
-  # Calculamos indicadores sobre el conjunto de velas de 1 min
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
@@ -128,91 +128,47 @@ def proyectar_horarios():
   bb_high = bb.bollinger_hband()
   bb_low = bb.bollinger_lband()
 
-  ahora = datetime.now(TIMEZONE_LOCAL)
-  candidatos = []
+  # Evaluamos la última vela cerrada de 1m (-1)
+  rsi_val = rsi_series.iloc[-1]
+  stoch_val = stoch_series.iloc[-1]
+  close_val = df["close"].iloc[-1]
+  open_val = df["open"].iloc[-1]
+  bb_h_val = bb_high.iloc[-1]
+  bb_l_val = bb_low.iloc[-1]
 
-  total_minutos = HORAS_PROYECCION * 60
+  if pd.isna(rsi_val) or pd.isna(stoch_val):
+    return None
 
-  # Evaluación secuencial minuto a minuto exacto (1, 2, 3, 4, 5...)
-  for m in range(2, total_minutos, 1):
-    # Tomamos directamente el estado actual de la última vela cerrada (-1)
-    rsi_val = rsi_series.iloc[-1]
-    stoch_val = stoch_series.iloc[-1]
-    close_val = df["close"].iloc[-1]
-    open_val = df["open"].iloc[-1]
-    bb_h_val = bb_high.iloc[-1]
-    bb_l_val = bb_low.iloc[-1]
+  score_venta = 0
+  score_compra = 0
 
-    if pd.isna(rsi_val) or pd.isna(stoch_val):
-      continue
+  # Confluencia de VENTA en M1
+  if rsi_val >= 65: score_venta += 1
+  if stoch_val >= 75: score_venta += 1
+  if close_val >= bb_h_val: score_venta += 1
+  if close_val < open_val: score_venta += 1  # Vela roja confirmada
 
-    score_venta = 0
-    score_compra = 0
+  # Confluencia de COMPRA en M1
+  if rsi_val <= 35: score_compra += 1
+  if stoch_val <= 25: score_compra += 1
+  if close_val <= bb_l_val: score_compra += 1
+  if close_val > open_val: score_compra += 1  # Vela verde confirmada
 
-    # Condición VENTA M1
-    if rsi_val >= 65: score_venta += 1
-    if stoch_val >= 75: score_venta += 1
-    if close_val >= bb_h_val: score_venta += 1
-    if close_val < open_val: score_venta += 1
+  if score_venta >= 2 and score_venta > score_compra:
+    return "ABAJO"
+  elif score_compra >= 2 and score_compra > score_venta:
+    return "ARRIBA"
 
-    # Condición COMPRA M1
-    if rsi_val <= 35: score_compra += 1
-    if stoch_val <= 25: score_compra += 1
-    if close_val <= bb_l_val: score_compra += 1
-    if close_val > open_val: score_compra += 1
-
-    direccion = None
-    probabilidad = 0
-
-    if score_venta >= 2 and score_venta > score_compra:
-      direccion = "ABAJO"
-      probabilidad = score_venta
-    elif score_compra >= 2 and score_compra > score_venta:
-      direccion = "ARRIBA"
-      probabilidad = score_compra
-
-    if direccion:
-      hora_entrada = ahora + timedelta(minutes=m)
-      hora_salida = hora_entrada + timedelta(minutes=1)
-
-      candidatos.append({
-          "hora_entrada": hora_entrada.strftime("%H:%M"),
-          "hora_salida": hora_salida.strftime("%H:%M"),
-          "direccion": direccion,
-          "probabilidad": probabilidad,
-          "minuto_offset": m,
-          "estado": "PENDIENTE",
-          "precio_entrada": None,
-          "precio_salida": None,
-      })
-
-  # Filtramos para seleccionar únicamente entre 7 y 10 señales
-  senales_filtradas = []
-  for cand in candidatos:
-    if len(senales_filtradas) >= MAX_SENALES:
-      break
-
-    colision = False
-    for sen in senales_filtradas:
-      # Garantiza al menos 2 minutos libres entre señales en M1
-      if abs(cand["minuto_offset"] - sen["minuto_offset"]) < 2:
-        colision = True
-        break
-
-    if not colision:
-      senales_filtradas.append(cand)
-
-  senales_filtradas.sort(key=lambda x: x["hora_entrada"])
-  return senales_filtradas
+  return None
 
 
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "🎯 <b>SEÑALES VIP M1 (VELAS DE 1 MINUTO)</b>\n"
+  texto = "🎯 <b>SEÑALES EN TIEMPO REAL (VELAS 1 MIN)</b>\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
   texto += f"<b>PROFIT: {GANANCIAS} ✅ - {PERDIDAS} ❌</b>\n\n"
 
   if not LISTA_SENALES:
-    texto += "<i>Analizando mercado en velas de 1 min...</i>\n"
+    texto += "<i>Monitoreando mercado vela a vela (1m)...</i>\n"
 
   for s in LISTA_SENALES:
     marca = ""
@@ -239,7 +195,7 @@ def construir_mensaje_panel(entrada_activa=None):
 
 
 def procesar_catalogador():
-  global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
+  global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS, ULTIMA_HORA_PROCESADA
 
   ahora = datetime.now(TIMEZONE_LOCAL)
   hora_actual_str = ahora.strftime("%H:%M")
@@ -252,6 +208,27 @@ def procesar_catalogador():
   actualizar_panel = False
   operacion_en_curso = None
 
+  # 1. EVALUAR Y GENERAR SEÑAL DE 1 MINUTO EN TIEMPO REAL
+  if len(LISTA_SENALES) < MAX_SENALES_TOTALES and hora_actual_str != ULTIMA_HORA_PROCESADA:
+    direccion = analizar_mercado_m1()
+    
+    if direccion:
+      ULTIMA_HORA_PROCESADA = hora_actual_str
+      hora_entrada = ahora + timedelta(minutes=1)  # Entrada en el siguiente minuto exacto
+      hora_salida = hora_entrada + timedelta(minutes=1)   # Expiración a 1 min
+
+      nueva_senal = {
+          "hora_entrada": hora_entrada.strftime("%H:%M"),
+          "hora_salida": hora_salida.strftime("%H:%M"),
+          "direccion": direccion,
+          "estado": "PENDIENTE",
+          "precio_entrada": None,
+          "precio_salida": None,
+      }
+      LISTA_SENALES.append(nueva_senal)
+      actualizar_panel = True
+
+  # 2. CONTROL Y AUDITORÍA DE OPERACIONES DE 1 MINUTO
   for s in LISTA_SENALES:
     # Capturar Entrada
     if (
@@ -270,7 +247,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida exacto a los 60 segundos
+    # Evaluar Salida al terminar el minuto exacto
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -292,20 +269,20 @@ def procesar_catalogador():
 
       actualizar_panel = True
 
-  if actualizar_panel and PANEL_MESSAGE_ID:
+  if actualizar_panel:
     nuevo_texto = construir_mensaje_panel(operacion_en_curso)
-    edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
+    if PANEL_MESSAGE_ID is None:
+      PANEL_MESSAGE_ID = send_telegram(nuevo_texto)
+    else:
+      edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
 
 
 # ===== BUCLE PRINCIPAL =====
 if __name__ == "__main__":
   threading.Thread(target=run_health_server, daemon=True).start()
 
-  LISTA_SENALES = proyectar_horarios()
-
-  if LISTA_SENALES:
-    msg_inicial = construir_mensaje_panel()
-    PANEL_MESSAGE_ID = send_telegram(msg_inicial)
+  msg_inicial = construir_mensaje_panel()
+  PANEL_MESSAGE_ID = send_telegram(msg_inicial)
 
   while True:
     try:
@@ -313,5 +290,5 @@ if __name__ == "__main__":
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(3)
+    time.sleep(3)  # Escaneo cada 3 segundos
     
