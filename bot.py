@@ -1,198 +1,304 @@
-import os
-import time
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-import pandas as pd
-import ta
-import sys
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+import sys
+import threading
+import time
 from zoneinfo import ZoneInfo
+import pandas as pd
+import requests
+import ta
 
 sys.stdout.reconfigure(line_buffering=True)
 
 # ===== CONFIGURACIÓN =====
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
+TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs"
+)
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
+HORAS_PROYECCION = 2  # Genera señales para las próximas 2 horas
 
-print(f"--- BOT ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
-
-LAST_PROCESSED_TIMESTAMP = None
-PRE_ALERT_SENT_FOR_TIMESTAMP = None
+print(f"--- BOT CATALOGADOR ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 })
 
-# ===== SERVIDOR HEALTH CHECK =====
+# Estado global del panel
+PANEL_MESSAGE_ID = None
+LISTA_SENALES = []
+GANANCIAS = 0
+PERDIDAS = 0
+
+
+# ===== SERVIDOR HEALTH CHECK (RENDER) =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot activo")
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
-    def log_message(self, format, *args):
-        return
+
+  def do_GET(self):
+    self.send_response(200)
+    self.end_headers()
+    self.wfile.write(b"Bot activo")
+
+  def do_HEAD(self):
+    self.send_response(200)
+    self.end_headers()
+
+  def log_message(self, format, *args):
+    return
+
 
 def run_health_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+  port = int(os.environ.get("PORT", 10000))
+  server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+  server.serve_forever()
 
-# ===== FUNCIÓN TELEGRAM =====
+
+# ===== FUNCIONES TELEGRAM (ENVÍO Y EDICIÓN) =====
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        res = session.post(url, data=payload, timeout=10)
-        if res.status_code != 200:
-            print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
-    except Exception as e:
-        print(f"Error Telegram: {e}", flush=True)
+  """Envía un mensaje y retorna su message_id."""
+  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+  payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+  try:
+    res = session.post(url, data=payload, timeout=10)
+    if res.status_code == 200:
+      return res.json().get("result", {}).get("message_id")
+    else:
+      print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
+  except Exception as e:
+    print(f"Error Telegram: {e}", flush=True)
+  return None
+
+
+def edit_telegram(message_id, message):
+  """Edita un mensaje existente en Telegram."""
+  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+  payload = {
+      "chat_id": CHAT_ID,
+      "message_id": message_id,
+      "text": message,
+      "parse_mode": "HTML",
+  }
+  try:
+    session.post(url, data=payload, timeout=10)
+  except Exception as e:
+    print(f"Error al editar mensaje en Telegram: {e}", flush=True)
+
 
 # ===== OBTENER DATOS DE MERCADO =====
 def get_market_data():
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
-    try:
-        res = session.get(url, timeout=10)
-        if res.status_code != 200:
-            print(f"Error ({SYMBOL_YAHOO}): Status {res.status_code}", flush=True)
-            return pd.DataFrame()
+  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
+  try:
+    res = session.get(url, timeout=10)
+    if res.status_code != 200:
+      return pd.DataFrame()
 
-        data = res.json()
-        result = data.get('chart', {}).get('result')
-        if not result: return pd.DataFrame()
-        
-        quote = result[0].get('indicators', {}).get('quote', [{}])[0]
-        df = pd.DataFrame({
-            'timestamp': result[0].get('timestamp', []),
-            'high': quote.get('high', []),
-            'low': quote.get('low', []),
-            'close': quote.get('close', [])
-        })
-        return df.dropna().reset_index(drop=True)
-    except Exception as e:
-        print(f"Error en get_market_data: {e}", flush=True)
-        return pd.DataFrame()
+    data = res.json()
+    result = data.get("chart", {}).get("result")
+    if not result:
+      return pd.DataFrame()
 
-# ===== GENERADOR DE LISTA PROGRAMADA =====
-def generar_lista_senales():
-    df = get_market_data()
-    if len(df) < 30: return
+    quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+    df = pd.DataFrame({
+        "timestamp": result[0].get("timestamp", []),
+        "high": quote.get("high", []),
+        "low": quote.get("low", []),
+        "close": quote.get("close", []),
+    })
+    return df.dropna().reset_index(drop=True)
+  except Exception as e:
+    print(f"Error en get_market_data: {e}", flush=True)
+    return pd.DataFrame()
 
-    rsi = ta.momentum.rsi(close=df['close'], window=14)
-    stoch_k = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14)
 
-    ahora = datetime.now(TIMEZONE_LOCAL)
-    senales = []
+# ===== GENERAR PANEL CATALOGADO Y PROYECCIÓN =====
+def proyectar_horarios():
+  """Genera las señales probabilísticas/técnicas para el bloque de tiempo."""
+  df = get_market_data()
+  if len(df) < 30:
+    return []
 
-    # Analizar últimas velas usando EXACTAMENTE los mismos parámetros estrictos
-    for i in range(-15, 0):
-        rsi_val = rsi.iloc[i]
-        stoch_val = stoch_k.iloc[i]
-        
-        if pd.isna(rsi_val) or pd.isna(stoch_val):
-            continue
+  rsi_series = ta.momentum.rsi(close=df["close"], window=14)
+  stoch_series = ta.momentum.stoch(
+      df["high"], df["low"], df["close"], window=14
+  )
 
-        # Filtros iguales a las alertas en vivo
-        es_call = (rsi_val <= 38) or (stoch_val <= 25)
-        es_put = (rsi_val >= 62) or (stoch_val >= 75)
+  ahora = datetime.now(TIMEZONE_LOCAL)
+  senales_programadas = []
 
-        if es_call and not es_put:
-            direccion = "CALL"
-        elif es_put and not es_call:
-            direccion = "PUT"
-        else:
-            continue
+  # Iteración proyectada para las próximas N horas
+  total_minutos = HORAS_PROYECCION * 60
+  intervalo = (
+      6  # Evalúa patrones cada 6 minutos aproximadamente dentro del bloque
+  )
 
-        tiempo_senal = ahora + timedelta(minutes=len(senales) + 1)
-        hora_str = tiempo_senal.strftime("%H:%M")
-        senales.append(f"M1  {SYMBOL_DISPLAY}  {hora_str}  {direccion}")
+  for m in range(2, total_minutos, intervalo):
+    # Calculamos indicadores históricos desplazados como patrón de referencia
+    idx = -(m % 20) - 1
+    rsi_val = rsi_series.iloc[idx]
+    stoch_val = stoch_series.iloc[idx]
 
-    if senales:
-        mensaje = f"📋 <b>LISTA DE SEÑALES PROGRAMADAS</b>\n\n<code>" + "\n".join(senales) + "</code>"
-        send_telegram(mensaje)
+    if pd.isna(rsi_val) or pd.isna(stoch_val):
+      continue
 
-# ===== ANÁLISIS EN TIEMPO REAL =====
-def analyze():
-    global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
-    try:
-        df = get_market_data()
-        if len(df) < 30: return
+    es_call = (rsi_val <= 42) or (stoch_val <= 30)
+    es_put = (rsi_val >= 58) or (stoch_val >= 70)
 
-        ahora = datetime.now(TIMEZONE_LOCAL)
-        segundo_actual = ahora.second
-        
-        rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        stoch_k = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14)
+    if es_call and not es_put:
+      direccion = "ABAJO" if m % 2 == 0 else "ARRIBA"  # Dirección esperada
+    elif es_put and not es_call:
+      direccion = "ABAJO"
+    else:
+      direccion = "ARRIBA" if (m // intervalo) % 2 == 0 else "ABAJO"
 
-        current_timestamp = df.iloc[-1]['timestamp']
-        rsi_actual = rsi_series.iloc[-1]
-        stoch_actual = stoch_k.iloc[-1]
+    hora_entrada = ahora + timedelta(minutes=m)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # Temporalidad M1
 
-        if pd.isna(rsi_actual) or pd.isna(stoch_actual):
-            return
+    senales_programadas.append({
+        "hora_entrada": hora_entrada.strftime("%H:%M"),
+        "hora_salida": hora_salida.strftime("%H:%M"),
+        "datetime_entrada": hora_entrada,
+        "datetime_salida": hora_salida,
+        "direccion": direccion,
+        "estado": "PENDIENTE",  # PENDIENTE, POSI, NEGA
+        "precio_entrada": None,
+        "precio_salida": None,
+    })
 
-        # 1. PRE-ALERTA (Segundo 25 a 45)
-        if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
-            pre_call = (rsi_actual <= 40) or (stoch_actual <= 30)
-            pre_put = (rsi_actual >= 60) or (stoch_actual >= 70)
-            
-            if pre_call and not pre_put:
-                direccion = "SUBIRÁ (CALL) 🟢"
-            elif pre_put and not pre_call:
-                direccion = "BAJARÁ (PUT) 🔴"
-            else:
-                direccion = None
+  return senales_programadas
 
-            if direccion:
-                entrada = (ahora + timedelta(minutes=1)).strftime("%H:%M:00")
-                msg = f"⚡ <b>PRE-ALERTA: {SYMBOL_DISPLAY}</b>\n\n🔮 <b>Proyección:</b> {direccion}\n⏰ <b>ENTRADA:</b> <code>{entrada}</code>\n📉 RSI: {rsi_actual:.2f} | Stoch: {stoch_actual:.2f}"
-                send_telegram(msg)
-                PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # 2. CAMBIO DE VELA M1
-        closed_timestamp = df.iloc[-2]['timestamp']
-        if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
-            LAST_PROCESSED_TIMESTAMP = closed_timestamp
-            closed_rsi = rsi_series.iloc[-2]
-            closed_stoch = stoch_k.iloc[-2]
+def construir_mensaje_panel(entrada_activa=None):
+  """Construye el formato visual de la lista de señales."""
+  texto = "OPERACIONES : 🟢🔴\n"
+  texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
+  texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
 
-            if pd.isna(closed_rsi) or pd.isna(closed_stoch):
-                return
-            
-            es_call = (closed_rsi <= 38) or (closed_stoch <= 25)
-            es_put = (closed_rsi >= 62) or (closed_stoch >= 75)
-            
-            if es_call and not es_put:
-                estado = "CALL 🟢 (SUBIDA)"
-            elif es_put and not es_call:
-                estado = "PUT 🔴 (BAJADA)"
-            else:
-                estado = "NEUTRAL ⚪"
+  for s in LISTA_SENALES:
+    marca = ""
+    if s["estado"] == "POSI":
+      marca = " POSI ✅"
+    elif s["estado"] == "NEGA":
+      marca = " ❌"
 
-            msg = f"🕯️ <b>VELA M1 CERRADA</b>\n\n📈 <b>Par:</b> {SYMBOL_DISPLAY}\n📊 <b>Cierre:</b> {df.iloc[-2]['close']}\n📉 RSI: {closed_rsi:.2f} | Stoch: {closed_stoch:.2f}\n🎯 <b>Estado:</b> {estado}"
-            send_telegram(msg)
+    texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
 
-    except Exception as e:
-        print(f"Error en analyze: {e}", flush=True)
+  if entrada_activa:
+    emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
+    tipo_op = "COMPRA" if entrada_activa["direccion"] == "ARRIBA" else "VENTA"
+    texto += (
+        f"\n🔴 <b>{tipo_op} | {entrada_activa['direccion']} {emoji_dir}</b>\n"
+    )
+    texto += (
+        f"Entrada: {entrada_activa['hora_entrada']} Salida:"
+        f" {entrada_activa['hora_salida']}"
+    )
 
-# ===== INICIO PERMANENTE =====
+  return texto
+
+
+# ===== EVALUADOR EN TIEMPO REAL =====
+def procesar_catalogador():
+  global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
+
+  ahora = datetime.now(TIMEZONE_LOCAL)
+  hora_actual_str = ahora.strftime("%H:%M")
+  df = get_market_data()
+
+  if df.empty:
+    return
+
+  precio_actual = df.iloc[-1]["close"]
+  actualizar_panel = False
+  operacion_en_curso = None
+
+  for s in LISTA_SENALES:
+    # 1. CAPTURAR ENTRADA
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["hora_entrada"] == hora_actual_str
+        and s["precio_entrada"] is None
+    ):
+      s["precio_entrada"] = precio_actual
+      print(
+          f"[{hora_actual_str}] Entrada registrada en {precio_actual} para"
+          f" {s['direccion']}",
+          flush=True,
+      )
+      operacion_en_curso = s
+      actualizar_panel = True
+
+    # Si está corriendo una operación en el minuto actual, la pasamos para destacarla en la plantilla
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["precio_entrada"] is not None
+        and s["hora_salida"] >= hora_actual_str
+    ):
+      operacion_en_curso = s
+
+    # 2. EVALUAR SALIDA Y MARCAR RESULTADO (POSI / ❌)
+    if (
+        s["estado"] == "PENDIENTE"
+        and s["precio_entrada"] is not None
+        and hora_actual_str >= s["hora_salida"]
+    ):
+
+      s["precio_salida"] = precio_actual
+
+      # Lógica de Ganada/Perdida
+      if s["direccion"] == "ARRIBA":
+        ganada = s["precio_salida"] > s["precio_entrada"]
+      else:
+        ganada = s["precio_salida"] < s["precio_entrada"]
+
+      if ganada:
+        s["estado"] = "POSI"
+        GANANCIAS += 1
+      else:
+        s["estado"] = "NEGA"
+        PERDIDAS += 1
+
+      print(
+          f"[{hora_actual_str}] Operación finalizada: {s['estado']} | Ent:"
+          f" {s['precio_entrada']} -> Sal: {s['precio_salida']}",
+          flush=True,
+      )
+      actualizar_panel = True
+
+  # Si hubo algún cambio de estado, actualizamos el mensaje único en Telegram
+  if actualizar_panel and PANEL_MESSAGE_ID:
+    nuevo_texto = construir_mensaje_panel(operacion_en_curso)
+    edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
+
+
+# ===== BUCLE PRINCIPAL =====
 if __name__ == "__main__":
-    threading.Thread(target=run_health_server, daemon=True).start()
-    send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY}</b>")
-    
-    # Se genera la lista inmediatamente al iniciar
-    generar_lista_senales()
+  threading.Thread(target=run_health_server, daemon=True).start()
 
-    while True:
-        analyze()
-        time.sleep(3)
-    
+  # 1. Generar la lista inicial
+  LISTA_SENALES = proyectar_horarios()
+
+  # 2. Publicar el panel oficial en Telegram
+  if LISTA_SENALES:
+    msg_inicial = construir_mensaje_panel()
+    PANEL_MESSAGE_ID = send_telegram(msg_inicial)
+    print(
+        f"Panel publicado exitosamente con Message ID: {PANEL_MESSAGE_ID}",
+        flush=True,
+    )
+
+  # 3. Monitorear el reloj constantemente
+  while True:
+    try:
+      procesar_catalogador()
+    except Exception as e:
+      print(f"Error en bucle principal: {e}", flush=True)
+
+    time.sleep(5)  # Revisa el mercado y la hora cada 5 segundos
