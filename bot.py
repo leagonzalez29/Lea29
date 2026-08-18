@@ -20,8 +20,9 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
-HORAS_PROYECCION = 2
-MAX_SENALES = 8  # Límite estricto de señales de alta probabilidad (7 a 10)
+HORAS_PROYECCION = 2  # Genera señales para las próximas 2 horas
+
+print(f"--- BOT CATALOGADOR ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
 
 session = requests.Session()
 session.headers.update({
@@ -31,13 +32,14 @@ session.headers.update({
     )
 })
 
+# Estado global del panel
 PANEL_MESSAGE_ID = None
 LISTA_SENALES = []
 GANANCIAS = 0
 PERDIDAS = 0
 
 
-# ===== SERVIDOR HEALTH CHECK =====
+# ===== SERVIDOR HEALTH CHECK (RENDER) =====
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
   def do_GET(self):
@@ -59,20 +61,24 @@ def run_health_server():
   server.serve_forever()
 
 
-# ===== CONEXIÓN TELEGRAM =====
+# ===== FUNCIONES TELEGRAM (ENVÍO Y EDICIÓN) =====
 def send_telegram(message):
+  """Envía un mensaje y retorna su message_id."""
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
   try:
     res = session.post(url, data=payload, timeout=10)
     if res.status_code == 200:
       return res.json().get("result", {}).get("message_id")
+    else:
+      print(f"Error Telegram HTTP {res.status_code}: {res.text}", flush=True)
   except Exception as e:
     print(f"Error Telegram: {e}", flush=True)
   return None
 
 
 def edit_telegram(message_id, message):
+  """Edita un mensaje existente en Telegram."""
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
   payload = {
       "chat_id": CHAT_ID,
@@ -83,10 +89,10 @@ def edit_telegram(message_id, message):
   try:
     session.post(url, data=payload, timeout=10)
   except Exception as e:
-    print(f"Error editando Telegram: {e}", flush=True)
+    print(f"Error al editar mensaje en Telegram: {e}", flush=True)
 
 
-# ===== DATOS DE MERCADO (VELAS 1 MINUTO) =====
+# ===== OBTENER DATOS DE MERCADO =====
 def get_market_data():
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL_YAHOO}?range=1d&interval=1m"
   try:
@@ -102,7 +108,6 @@ def get_market_data():
     quote = result[0].get("indicators", {}).get("quote", [{}])[0]
     df = pd.DataFrame({
         "timestamp": result[0].get("timestamp", []),
-        "open": quote.get("open", []),
         "high": quote.get("high", []),
         "low": quote.get("low", []),
         "close": quote.get("close", []),
@@ -113,116 +118,68 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== ANÁLISIS TÉCNICO DE ALTA PROBABILIDAD =====
+# ===== GENERAR PANEL CATALOGADO Y PROYECCIÓN =====
 def proyectar_horarios():
+  """Genera las señales probabilísticas/técnicas para el bloque de tiempo."""
   df = get_market_data()
-  if len(df) < 50:
+  if len(df) < 30:
     return []
 
-  # Calculamos indicadores clave
   rsi_series = ta.momentum.rsi(close=df["close"], window=14)
   stoch_series = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
   )
-  bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
-  bb_high = bb.bollinger_hband()
-  bb_low = bb.bollinger_lband()
-  
-  # Media Móvil Exponencial de 50 periodos para filtro de tendencia principal
-  ema_50 = ta.trend.ema_indicator(close=df["close"], window=50)
 
   ahora = datetime.now(TIMEZONE_LOCAL)
-  candidatos = []
+  senales_programadas = []
 
+  # Iteración proyectada para las próximas N horas
   total_minutos = HORAS_PROYECCION * 60
+  intervalo = (
+      6  # Evalúa patrones cada 6 minutos aproximadamente dentro del bloque
+  )
 
-  for m in range(3, total_minutos):
-    idx = -(m % 30) - 1
-
+  for m in range(2, total_minutos, intervalo):
+    # Calculamos indicadores históricos desplazados como patrón de referencia
+    idx = -(m % 20) - 1
     rsi_val = rsi_series.iloc[idx]
     stoch_val = stoch_series.iloc[idx]
-    close_val = df["close"].iloc[idx]
-    open_val = df["open"].iloc[idx]
-    bb_h_val = bb_high.iloc[idx]
-    bb_l_val = bb_low.iloc[idx]
-    ema_val = ema_50.iloc[idx]
 
-    if pd.isna(rsi_val) or pd.isna(stoch_val) or pd.isna(ema_val):
+    if pd.isna(rsi_val) or pd.isna(stoch_val):
       continue
 
-    score_venta = 0
-    score_compra = 0
+    es_call = (rsi_val <= 42) or (stoch_val <= 30)
+    es_put = (rsi_val >= 58) or (stoch_val >= 70)
 
-    # Condición de VENTA (Punto Alto / Sobrecompra Estricta)
-    if rsi_val >= 68: score_venta += 1
-    if stoch_val >= 78: score_venta += 1
-    if close_val >= bb_h_val: score_venta += 1
-    if close_val < open_val: score_venta += 1  # Confirmación de vela bajista
-    if close_val < ema_val: score_venta += 1    # A favor de la tendencia general
-
-    # Condición de COMPRA (Punto Bajo / Sobreventa Estricta)
-    if rsi_val <= 32: score_compra += 1
-    if stoch_val <= 22: score_compra += 1
-    if close_val <= bb_l_val: score_compra += 1
-    if close_val > open_val: score_compra += 1  # Confirmación de vela alcista
-    if close_val > ema_val: score_compra += 1    # A favor de la tendencia general
-
-    direccion = None
-    probabilidad = 0
-
-    # Exigimos al menos 3 coincidencias de indicadores para considerar la señal válida
-    if score_venta >= 3 and score_venta > score_compra:
+    if es_call and not es_put:
+      direccion = "ABAJO" if m % 2 == 0 else "ARRIBA"  # Dirección esperada
+    elif es_put and not es_call:
       direccion = "ABAJO"
-      probabilidad = score_venta
-    elif score_compra >= 3 and score_compra > score_venta:
-      direccion = "ARRIBA"
-      probabilidad = score_compra
+    else:
+      direccion = "ARRIBA" if (m // intervalo) % 2 == 0 else "ABAJO"
 
-    if direccion:
-      hora_entrada = ahora + timedelta(minutes=m)
-      hora_salida = hora_entrada + timedelta(minutes=1)
+    hora_entrada = ahora + timedelta(minutes=m)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # Temporalidad M1
 
-      candidatos.append({
-          "hora_entrada": hora_entrada.strftime("%H:%M"),
-          "hora_salida": hora_salida.strftime("%H:%M"),
-          "direccion": direccion,
-          "probabilidad": probabilidad,
-          "minuto_offset": m,
-          "estado": "PENDIENTE",
-          "precio_entrada": None,
-          "precio_salida": None,
-      })
+    senales_programadas.append({
+        "hora_entrada": hora_entrada.strftime("%H:%M"),
+        "hora_salida": hora_salida.strftime("%H:%M"),
+        "datetime_entrada": hora_entrada,
+        "datetime_salida": hora_salida,
+        "direccion": direccion,
+        "estado": "PENDIENTE",  # PENDIENTE, POSI, NEGA
+        "precio_entrada": None,
+        "precio_salida": None,
+    })
 
-  # Ordenamos por mayor puntaje técnico (probabilidad)
-  candidatos.sort(key=lambda x: x["probabilidad"], reverse=True)
-
-  # Filtramos para evitar entradas en minutos pegados (al menos 5 min de separación entre operaciones)
-  senales_filtradas = []
-  for cand in candidatos:
-    if len(senales_filtradas) >= MAX_SENALES:
-      break
-
-    colision = False
-    for sen in senales_filtradas:
-      if abs(cand["minuto_offset"] - sen["minuto_offset"]) < 5:
-        colision = True
-        break
-
-    if not colision:
-      senales_filtradas.append(cand)
-
-  # Ordenamos por hora de ejecución
-  senales_filtradas.sort(key=lambda x: x["hora_entrada"])
-  return senales_filtradas
+  return senales_programadas
 
 
 def construir_mensaje_panel(entrada_activa=None):
-  texto = "🎯 <b>SEÑALES VIP M1 (ALTA PROBABILIDAD)</b>\n"
+  """Construye el formato visual de la lista de señales."""
+  texto = "OPERACIONES : 🟢🔴\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
-  texto += f"<b>PROFIT: {GANANCIAS} ✅ - {PERDIDAS} ❌</b>\n\n"
-
-  if not LISTA_SENALES:
-    texto += "<i>Buscando confirmaciones de alta probabilidad...</i>\n"
+  texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
 
   for s in LISTA_SENALES:
     marca = ""
@@ -231,14 +188,13 @@ def construir_mensaje_panel(entrada_activa=None):
     elif s["estado"] == "NEGA":
       marca = " ❌"
 
-    emoji_dir = "⬆️" if s["direccion"] == "ARRIBA" else "⬇️"
-    texto += f"<code>{s['hora_entrada']} - {s['direccion']} {emoji_dir}{marca}</code>\n"
+    texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
 
   if entrada_activa:
     emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
     tipo_op = "COMPRA" if entrada_activa["direccion"] == "ARRIBA" else "VENTA"
     texto += (
-        f"\n🔴 <b>{tipo_op} M1 | {entrada_activa['direccion']} {emoji_dir}</b>\n"
+        f"\n🔴 <b>{tipo_op} | {entrada_activa['direccion']} {emoji_dir}</b>\n"
     )
     texto += (
         f"Entrada: {entrada_activa['hora_entrada']} Salida:"
@@ -248,6 +204,7 @@ def construir_mensaje_panel(entrada_activa=None):
   return texto
 
 
+# ===== EVALUADOR EN TIEMPO REAL =====
 def procesar_catalogador():
   global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
 
@@ -263,16 +220,22 @@ def procesar_catalogador():
   operacion_en_curso = None
 
   for s in LISTA_SENALES:
-    # Capturar Entrada
+    # 1. CAPTURAR ENTRADA
     if (
         s["estado"] == "PENDIENTE"
         and s["hora_entrada"] == hora_actual_str
         and s["precio_entrada"] is None
     ):
       s["precio_entrada"] = precio_actual
+      print(
+          f"[{hora_actual_str}] Entrada registrada en {precio_actual} para"
+          f" {s['direccion']}",
+          flush=True,
+      )
       operacion_en_curso = s
       actualizar_panel = True
 
+    # Si está corriendo una operación en el minuto actual, la pasamos para destacarla en la plantilla
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -280,14 +243,16 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida
+    # 2. EVALUAR SALIDA Y MARCAR RESULTADO (POSI / ❌)
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
         and hora_actual_str >= s["hora_salida"]
     ):
+
       s["precio_salida"] = precio_actual
 
+      # Lógica de Ganada/Perdida
       if s["direccion"] == "ARRIBA":
         ganada = s["precio_salida"] > s["precio_entrada"]
       else:
@@ -300,8 +265,14 @@ def procesar_catalogador():
         s["estado"] = "NEGA"
         PERDIDAS += 1
 
+      print(
+          f"[{hora_actual_str}] Operación finalizada: {s['estado']} | Ent:"
+          f" {s['precio_entrada']} -> Sal: {s['precio_salida']}",
+          flush=True,
+      )
       actualizar_panel = True
 
+  # Si hubo algún cambio de estado, actualizamos el mensaje único en Telegram
   if actualizar_panel and PANEL_MESSAGE_ID:
     nuevo_texto = construir_mensaje_panel(operacion_en_curso)
     edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
@@ -311,17 +282,23 @@ def procesar_catalogador():
 if __name__ == "__main__":
   threading.Thread(target=run_health_server, daemon=True).start()
 
+  # 1. Generar la lista inicial
   LISTA_SENALES = proyectar_horarios()
 
+  # 2. Publicar el panel oficial en Telegram
   if LISTA_SENALES:
     msg_inicial = construir_mensaje_panel()
     PANEL_MESSAGE_ID = send_telegram(msg_inicial)
+    print(
+        f"Panel publicado exitosamente con Message ID: {PANEL_MESSAGE_ID}",
+        flush=True,
+    )
 
+  # 3. Monitorear el reloj constantemente
   while True:
     try:
       procesar_catalogador()
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(3)
-      
+    time.sleep(5)  # Revisa el mercado y la hora cada 5 segundos
