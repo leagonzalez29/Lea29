@@ -15,9 +15,8 @@ sys.stdout.reconfigure(line_buffering=True)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# Símbolo de análisis
 SYMBOL_YAHOO = "BTC-USD"
-SYMBOL_DISPLAY = "BTC-USD"  # Si operas OTC, puedes cambiar a ej: "AUDCAD-OTC"
+SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
 print(f"--- BOT ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
@@ -147,52 +146,12 @@ def analyze():
     except Exception as e:
         print(f"Error en analyze: {e}", flush=True)
 
-# ===== GENERADOR DE LISTA DE SEÑALES EN BLOQUE =====
-def generar_lista_senales():
-    """Genera un bloque de texto con la lista de señales programadas."""
-    df = get_market_data()
-    if len(df) < 30: return
-
-    rsi = ta.momentum.rsi(close=df['close'], window=14)
-    stoch_k = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14)
-
-    ahora = datetime.now(TIMEZONE_LOCAL)
-    senales = []
-
-    for i in range(-15, 0):
-        rsi_val = rsi.iloc[i]
-        stoch_val = stoch_k.iloc[i]
-        
-        if pd.isna(rsi_val) or pd.isna(stoch_val):
-            continue
-
-        if rsi_val <= 42 or stoch_val <= 30:
-            direccion = "CALL"
-        elif rsi_val >= 58 or stoch_val >= 70:
-            direccion = "PUT"
-        else:
-            continue
-
-        tiempo_senal = ahora + timedelta(minutes=len(senales) + 1)
-        hora_str = tiempo_senal.strftime("%H:%M")
-        senales.append(f"M1  {SYMBOL_DISPLAY}  {hora_str}  {direccion}")
-
-    if senales:
-        mensaje = f"📋 <b>LISTA DE SEÑALES PROGRAMADAS</b>\n\n<code>" + "\n".join(senales) + "</code>"
-        send_telegram(mensaje)
-
 # ===== INICIO DE EJECUCIÓN PERMANENTE =====
 if __name__ == "__main__":
-    # Inicia el puerto HTTP en un hilo secundario para pasar el Health Check de Render
     threading.Thread(target=run_health_server, daemon=True).start()
-    
-    send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY}</b>")
-    
-    # Envía la lista inicial al encender
-    generar_lista_senales()
+    send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL_DISPLAY} en Tiempo Real</b>")
 
-    # Bucle infinito que evita que el proceso finalice en Render
     while True:
         analyze()
-        time.sleep(2)
+        time.sleep(3)  # Ajustado a 3s para evaluar el mercado de forma fluida
         
