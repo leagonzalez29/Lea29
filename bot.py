@@ -11,15 +11,28 @@ from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ===== CONFIGURACIÓN =====
+# ===== CONFIGURACIÓN DEL BOT Y OPERATORIA =====
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8718351888:AAFnojuq28NyofPweVp0tBpOJRgYSy_JJNs")
 CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 
-# BTC-USD para garantizar oscilaciones constantes 24/7
-SYMBOL = "BTC-USD" 
+SYMBOL = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-print(f"--- BOT ANALIZANDO {SYMBOL} ---", flush=True)
+# Parámetros de Operación
+MONTO_OPERACION = 1           # Monto por operación ($)
+TIEMPO_OPERACION = 1          # Duración en minutos
+TEMPORALIDAD = "1m"           # "1m" o "5m"
+TIPO_OPERACION = "Binarias"   # Tipo de operación
+ESTRATEGIA = "Bandas de Bollinger + RSI"
+
+# Parámetros Técnicos
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 65
+RSI_OVERSOLD = 35
+BOLLINGER_PERIOD = 20
+BOLLINGER_STD = 2.0
+
+print(f"--- BOT ANALIZANDO {SYMBOL} ({TEMPORALIDAD}) ---", flush=True)
 
 LAST_PROCESSED_TIMESTAMP = None
 PRE_ALERT_SENT_FOR_TIMESTAMP = None
@@ -58,7 +71,11 @@ def send_telegram(message):
         print(f"Error Telegram: {e}", flush=True)
 
 def get_market_data():
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range=1d&interval=1m"
+    # Rango dinámico según temporalidad
+    interval_param = TEMPORALIDAD
+    range_param = "1d" if TEMPORALIDAD == "1m" else "5d"
+    
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}?range={range_param}&interval={interval_param}"
     try:
         res = session.get(url, timeout=10)
         if res.status_code != 200:
@@ -72,6 +89,7 @@ def get_market_data():
         quote = result[0].get('indicators', {}).get('quote', [{}])[0]
         df = pd.DataFrame({
             'timestamp': result[0].get('timestamp', []),
+            'open': quote.get('open', []),
             'high': quote.get('high', []),
             'low': quote.get('low', []),
             'close': quote.get('close', [])
@@ -84,55 +102,89 @@ def analyze():
     global LAST_PROCESSED_TIMESTAMP, PRE_ALERT_SENT_FOR_TIMESTAMP
     try:
         df = get_market_data()
-        if len(df) < 20: return
+        if len(df) < BOLLINGER_PERIOD + 5: return
 
         ahora = datetime.now(TIMEZONE_LOCAL)
         segundo_actual = ahora.second
         
-        rsi_series = ta.momentum.rsi(close=df['close'], window=14)
-        stoch_k = ta.momentum.stoch(df['high'], df['low'], df['close'], window=14)
+        # --- Cálculo de Indicadores ---
+        # 1. RSI
+        rsi_series = ta.momentum.rsi(close=df['close'], window=RSI_PERIOD)
+        
+        # 2. Bandas de Bollinger
+        bb = ta.volatility.BollingerBands(close=df['close'], window=BOLLINGER_PERIOD, window_dev=BOLLINGER_STD)
+        bb_hband = bb.bollinger_hband()
+        bb_lband = bb.bollinger_lband()
 
         current_timestamp = df.iloc[-1]['timestamp']
+        close_actual = df.iloc[-1]['close']
         rsi_actual = rsi_series.iloc[-1]
-        stoch_actual = stoch_k.iloc[-1]
+        bb_high_act = bb_hband.iloc[-1]
+        bb_low_act = bb_lband.iloc[-1]
 
-        # 1. PRE-ALERTA (Segundo 25 a 45) - SENSIBILIDAD OPTIMIZADA
+        # 1. PRE-ALERTA (Ventana de anticipación)
         if 25 <= segundo_actual <= 45 and PRE_ALERT_SENT_FOR_TIMESTAMP != current_timestamp:
-            pre_call = (rsi_actual <= 40) or (stoch_actual <= 30)
-            pre_put = (rsi_actual >= 60) or (stoch_actual >= 70)
+            pre_call = (close_actual <= bb_low_act) and (rsi_actual <= RSI_OVERSOLD + 5)
+            pre_put = (close_actual >= bb_high_act) and (rsi_actual >= RSI_OVERBOUGHT - 5)
             
+            direccion = None
             if pre_call and not pre_put:
                 direccion = "SUBIRÁ (CALL) 🟢"
             elif pre_put and not pre_call:
                 direccion = "BAJARÁ (PUT) 🔴"
-            else:
-                direccion = None
 
             if direccion:
-                entrada = (ahora + timedelta(minutes=1)).strftime("%H:%M:00")
-                msg = f"⚡ <b>PRE-ALERTA: {SYMBOL}</b>\n\n🔮 <b>Proyección:</b> {direccion}\n⏰ <b>ENTRADA:</b> <code>{entrada}</code>\n📉 RSI: {rsi_actual:.2f} | Stoch: {stoch_actual:.2f}"
+                mins_add = 1 if TEMPORALIDAD == "1m" else 5
+                entrada = (ahora + timedelta(minutes=mins_add)).strftime("%H:%M:00")
+                
+                msg = (
+                    f"⚡ <b>PRE-ALERTA ({TIPO_OPERACION})</b>\n"
+                    f"📈 <b>Par:</b> {SYMBOL} | <b>Gráfico:</b> {TEMPORALIDAD}\n\n"
+                    f"🔮 <b>Proyección:</b> {direccion}\n"
+                    f"⏰ <b>Hora Entrada:</b> <code>{entrada}</code>\n"
+                    f"⏱️ <b>Expiración:</b> {TIEMPO_OPERACION} Min\n"
+                    f"💵 <b>Monto Sugerido:</b> ${MONTO_OPERACION}\n\n"
+                    f"📊 <b>Indicadores actuales:</b>\n"
+                    f"• RSI: {rsi_actual:.2f}\n"
+                    f"• Precio: {close_actual:.2f}\n"
+                    f"• Banda Sup: {bb_high_act:.2f}\n"
+                    f"• Banda Inf: {bb_low_act:.2f}"
+                )
                 send_telegram(msg)
                 PRE_ALERT_SENT_FOR_TIMESTAMP = current_timestamp
 
-        # 2. CAMBIO DE VELA M1 - SENSIBILIDAD OPTIMIZADA
+        # 2. CONFIRMACIÓN AL CIERRE DE VELA
         closed_timestamp = df.iloc[-2]['timestamp']
         if LAST_PROCESSED_TIMESTAMP != closed_timestamp:
             LAST_PROCESSED_TIMESTAMP = closed_timestamp
-            closed_rsi = rsi_series.iloc[-2]
-            closed_stoch = stoch_k.iloc[-2]
             
-            # Se activará si cualquiera de los dos toca la zona de oportunidad
-            es_call = (closed_rsi <= 38) or (closed_stoch <= 25)
-            es_put = (closed_rsi >= 62) or (closed_stoch >= 75)
+            closed_close = df.iloc[-2]['close']
+            closed_rsi = rsi_series.iloc[-2]
+            closed_bb_high = bb_hband.iloc[-2]
+            closed_bb_low = bb_lband.iloc[-2]
+            
+            # Condición Estrategia: Toque/Corte de Banda + RSI
+            es_call = (closed_close <= closed_bb_low) and (closed_rsi <= RSI_OVERSOLD)
+            es_put = (closed_close >= closed_bb_high) and (closed_rsi >= RSI_OVERBOUGHT)
             
             if es_call and not es_put:
-                estado = "CALL 🟢 (SUBIDA)"
+                estado = "🟢 CALL (COMPRA)"
             elif es_put and not es_call:
-                estado = "PUT 🔴 (BAJADA)"
+                estado = "🔴 PUT (VENTA)"
             else:
-                estado = "NEUTRAL ⚪"
+                estado = "⚪ NEUTRAL"
 
-            msg = f"🕯️ <b>VELA M1 CERRADA</b>\n\n📈 <b>Par:</b> {SYMBOL}\n📊 <b>Cierre:</b> {df.iloc[-2]['close']}\n📉 RSI: {closed_rsi:.2f} | Stoch: {closed_stoch:.2f}\n🎯 <b>Estado:</b> {estado}"
+            msg = (
+                f"🕯️ <b>VELA {TEMPORALIDAD.upper()} CERRADA</b>\n\n"
+                f"🎯 <b>Señal:</b> {estado}\n"
+                f"📌 <b>Tipo:</b> {TIPO_OPERACION}\n"
+                f"💰 <b>Monto:</b> ${MONTO_OPERACION} | ⌛ <b>Tiempo:</b> {TIEMPO_OPERACION} min\n\n"
+                f"📊 <b>Datos de Cierre:</b>\n"
+                f"• Precio Cierre: {closed_close:.2f}\n"
+                f"• RSI: {closed_rsi:.2f}\n"
+                f"• BB Superior: {closed_bb_high:.2f}\n"
+                f"• BB Inferior: {closed_bb_low:.2f}"
+            )
             send_telegram(msg)
 
     except Exception as e:
@@ -140,8 +192,19 @@ def analyze():
 
 # ===== INICIO =====
 threading.Thread(target=run_health_server, daemon=True).start()
-send_telegram(f"🚀 <b>Bot Activo Analizando {SYMBOL}</b>")
+
+# Mensaje de bienvenida con la parametrización
+init_msg = (
+    f"🚀 <b>BOT DE TRADING INICIADO</b>\n\n"
+    f"📊 <b>Par:</b> {SYMBOL}\n"
+    f"⏱️ <b>Temporalidad Gráfico:</b> {TEMPORALIDAD}\n"
+    f"📈 <b>Tipo de Operación:</b> {TIPO_OPERACION}\n"
+    f"⏳ <b>Tiempo por Operación:</b> {TIEMPO_OPERACION} min\n"
+    f"💵 <b>Monto por Operación:</b> ${MONTO_OPERACION}\n"
+    f"🧠 <b>Estrategia:</b> {ESTRATEGIA}"
+)
+send_telegram(init_msg)
+
 while True:
     analyze()
     time.sleep(5)
-               
