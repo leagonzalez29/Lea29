@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
+import random
 import sys
 import threading
 import time
@@ -20,7 +21,9 @@ CHAT_ID = os.environ.get("CHAT_ID", "544714195")
 SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
-HORAS_PROYECCION = 2
+
+# Cantidad fija de señales por bloque (entre 7 y 10)
+CANTIDAD_SENALES = random.randint(7, 10)
 
 session = requests.Session()
 session.headers.update({
@@ -111,7 +114,7 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== DETECCIÓN DE PUNTOS ALTOS Y BAJOS =====
+# ===== GENERACIÓN (7 A 10 SEÑALES CON ESPACIADO CORTO DE 1 A 2 MIN) =====
 def proyectar_horarios():
   df = get_market_data()
   if len(df) < 30:
@@ -122,43 +125,25 @@ def proyectar_horarios():
       df["high"], df["low"], df["close"], window=14
   )
 
-  bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
-  bb_high = bb.bollinger_hband()
-  bb_low = bb.bollinger_lband()
-
   ahora = datetime.now(TIMEZONE_LOCAL)
   senales_programadas = []
 
-  total_minutos = HORAS_PROYECCION * 60
+  minuto_acumulado = 1
 
-  # Recorrido minuto a minuto continuo (1 min)
-  for m in range(1, total_minutos, 1):
+  for i in range(CANTIDAD_SENALES):
     rsi_val = rsi_series.iloc[-1]
     stoch_val = stoch_series.iloc[-1]
-    close_val = df["close"].iloc[-1]
-    bb_h_val = bb_high.iloc[-1]
-    bb_l_val = bb_low.iloc[-1]
 
     if pd.isna(rsi_val) or pd.isna(stoch_val):
-      continue
-
-    es_punto_alto = (
-        (rsi_val >= 60) or (stoch_val >= 70) or (close_val >= bb_h_val)
-    )
-
-    es_punto_bajo = (
-        (rsi_val <= 40) or (stoch_val <= 30) or (close_val <= bb_l_val)
-    )
-
-    if es_punto_alto and not es_punto_bajo:
-      direccion = "ABAJO"
-    elif es_punto_bajo and not es_punto_alto:
-      direccion = "ARRIBA"
+      direccion = "ARRIBA" if (i % 2 == 0) else "ABAJO"
     else:
-      direccion = "ARRIBA" if (m % 2 == 0) else "ABAJO"
+      if rsi_val >= 50 or stoch_val >= 50:
+        direccion = "ABAJO"
+      else:
+        direccion = "ARRIBA"
 
-    hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)
+    hora_entrada = ahora + timedelta(minutes=minuto_acumulado)
+    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela M1 (1 minuto)
 
     senales_programadas.append({
         "hora_entrada": hora_entrada.strftime("%H:%M"),
@@ -168,6 +153,9 @@ def proyectar_horarios():
         "precio_entrada": None,
         "precio_salida": None,
     })
+
+    # Espaciado de 1 a 2 minutos entre operaciones
+    minuto_acumulado += random.choice([1, 2])
 
   return senales_programadas
 
@@ -232,7 +220,7 @@ def procesar_catalogador():
     ):
       operacion_en_curso = s
 
-    # Evaluar Salida (Vela de 1 minuto)
+    # Evaluar Salida a 1 minuto
     if (
         s["estado"] == "PENDIENTE"
         and s["precio_entrada"] is not None
@@ -263,7 +251,6 @@ def procesar_catalogador():
 if __name__ == "__main__":
   threading.Thread(target=run_health_server, daemon=True).start()
 
-  # Imprime el log exacto de la captura de pantalla
   print(f"--- BOT ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
 
   LISTA_SENALES = proyectar_horarios()
