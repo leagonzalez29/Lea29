@@ -243,4 +243,4 @@ if __name__ == "__main__":
       print(f"Error en bucle principal: {e}", flush=True)
 
     time.sleep(2)
-      
+    
