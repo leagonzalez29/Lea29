@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
-import random
 import sys
 import threading
 import time
@@ -22,9 +21,6 @@ SYMBOL_YAHOO = "BTC-USD"
 SYMBOL_DISPLAY = "BTC-USD"
 TIMEZONE_LOCAL = ZoneInfo("America/Panama")
 
-# Cantidad estricta de señales (entre 7 y 10)
-CANTIDAD_SENALES = random.randint(7, 10)
-
 session = requests.Session()
 session.headers.update({
     "User-Agent": (
@@ -34,9 +30,10 @@ session.headers.update({
 })
 
 PANEL_MESSAGE_ID = None
-LISTA_SENALES = []
+OPERACION_ACTIVA = None
 GANANCIAS = 0
 PERDIDAS = 0
+ULTIMA_MINUTA_EVALUADA = None
 
 
 # ===== SERVIDOR HEALTH CHECK =====
@@ -114,151 +111,139 @@ def get_market_data():
     return pd.DataFrame()
 
 
-# ===== GENERACIÓN MINUTO A MINUTO CONTINUO (7 A 10 SEÑALES SEGUIDAS) =====
-def proyectar_horarios():
+# ===== EVALUAR ENTRADA DE ALTA PROBABILIDAD =====
+def evaluar_entrada_mercado():
   df = get_market_data()
   if len(df) < 30:
-    return []
+    return None
 
-  rsi_series = ta.momentum.rsi(close=df["close"], window=14)
-  stoch_series = ta.momentum.stoch(
+  rsi = ta.momentum.rsi(close=df["close"], window=14).iloc[-1]
+  stoch = ta.momentum.stoch(
       df["high"], df["low"], df["close"], window=14
-  )
+  ).iloc[-1]
 
-  ahora = datetime.now(TIMEZONE_LOCAL)
-  senales_programadas = []
+  if pd.isna(rsi) or pd.isna(stoch):
+    return None
 
-  # Genera señales consecutivas minuto a minuto (m = 1, 2, 3...)
-  for m in range(1, CANTIDAD_SENALES + 1):
-    rsi_val = rsi_series.iloc[-1]
-    stoch_val = stoch_series.iloc[-1]
+  # Condición estricta ALTA PROBABILIDAD - COMPRA
+  if rsi <= 30 and stoch <= 20:
+    return "ARRIBA"
 
-    if pd.isna(rsi_val) or pd.isna(stoch_val):
-      direccion = "ARRIBA" if (m % 2 == 0) else "ABAJO"
-    else:
-      if rsi_val >= 50 or stoch_val >= 50:
-        direccion = "ABAJO"
-      else:
-        direccion = "ARRIBA"
+  # Condición estricta ALTA PROBABILIDAD - VENTA
+  if rsi >= 70 and stoch >= 80:
+    return "ABAJO"
 
-    hora_entrada = ahora + timedelta(minutes=m)
-    hora_salida = hora_entrada + timedelta(minutes=1)  # Vela M1 exactamente
-
-    senales_programadas.append({
-        "hora_entrada": hora_entrada.strftime("%H:%M"),
-        "hora_salida": hora_salida.strftime("%H:%M"),
-        "direccion": direccion,
-        "estado": "PENDIENTE",
-        "precio_entrada": None,
-        "precio_salida": None,
-    })
-
-  return senales_programadas
+  return None
 
 
-def construir_mensaje_panel(entrada_activa=None):
+def construir_mensaje_panel():
   texto = "OPERACIONES : 🟢🔴\n"
   texto += f"<b>{SYMBOL_DISPLAY}</b>\n"
   texto += f"<b>{GANANCIAS} - {PERDIDAS} PROFIT :)</b>\n\n"
 
-  for s in LISTA_SENALES:
+  if OPERACION_ACTIVA:
+    op = OPERACION_ACTIVA
+    emoji_dir = "⬆️" if op["direccion"] == "ARRIBA" else "⬇️"
+    tipo_op = "COMPRA" if op["direccion"] == "ARRIBA" else "VENTA"
+
     marca = ""
-    if s["estado"] == "POSI":
+    if op["estado"] == "POSI":
       marca = " POSI ✅"
-    elif s["estado"] == "NEGA":
+    elif op["estado"] == "NEGA":
       marca = " ❌"
 
-    texto += f"<code>{s['hora_entrada']} - {s['direccion']}{marca}</code>\n"
-
-  if entrada_activa:
-    emoji_dir = "⬆️" if entrada_activa["direccion"] == "ARRIBA" else "⬇️"
-    tipo_op = "COMPRA" if entrada_activa["direccion"] == "ARRIBA" else "VENTA"
+    texto += f"<code>{op['hora_entrada']} - {op['direccion']}{marca}</code>\n"
+    texto += f"\n🔴 <b>{tipo_op} | {op['direccion']} {emoji_dir}</b>\n"
+    texto += f"Entrada: {op['hora_entrada']} Salida: {op['hora_salida']}"
+  else:
     texto += (
-        f"\n🔴 <b>{tipo_op} | {entrada_activa['direccion']} {emoji_dir}</b>\n"
-    )
-    texto += (
-        f"Entrada: {entrada_activa['hora_entrada']} Salida:"
-        f" {entrada_activa['hora_salida']}"
+        "<i>Analizando mercado... Esperando patrón de alta"
+        " probabilidad... ⏳</i>"
     )
 
   return texto
 
 
-def procesar_catalogador():
-  global PANEL_MESSAGE_ID, LISTA_SENALES, GANANCIAS, PERDIDAS
+def procesar_bot():
+  global PANEL_MESSAGE_ID, OPERACION_ACTIVA, GANANCIAS, PERDIDAS, ULTIMA_MINUTA_EVALUADA
 
   ahora = datetime.now(TIMEZONE_LOCAL)
   hora_actual_str = ahora.strftime("%H:%M")
-  df = get_market_data()
+  segundo_actual = ahora.second
 
+  df = get_market_data()
   if df.empty:
     return
 
   precio_actual = df.iloc[-1]["close"]
-  actualizar_panel = False
-  operacion_en_curso = None
 
-  for s in LISTA_SENALES:
-    # Capturar Entrada
-    if (
-        s["estado"] == "PENDIENTE"
-        and s["hora_entrada"] == hora_actual_str
-        and s["precio_entrada"] is None
-    ):
-      s["precio_entrada"] = precio_actual
-      operacion_en_curso = s
-      actualizar_panel = True
+  # 1. Verificar y cerrar operación activa al cumplirse la hora de salida
+  if OPERACION_ACTIVA and OPERACION_ACTIVA["estado"] == "EN_CURSO":
+    if hora_actual_str >= OPERACION_ACTIVA["hora_salida"]:
+      OPERACION_ACTIVA["precio_salida"] = precio_actual
 
-    if (
-        s["estado"] == "PENDIENTE"
-        and s["precio_entrada"] is not None
-        and s["hora_salida"] >= hora_actual_str
-    ):
-      operacion_en_curso = s
-
-    # Cierre de operación al terminar el minuto
-    if (
-        s["estado"] == "PENDIENTE"
-        and s["precio_entrada"] is not None
-        and hora_actual_str >= s["hora_salida"]
-    ):
-      s["precio_salida"] = precio_actual
-
-      if s["direccion"] == "ARRIBA":
-        ganada = s["precio_salida"] > s["precio_entrada"]
+      if OPERACION_ACTIVA["direccion"] == "ARRIBA":
+        ganada = (
+            OPERACION_ACTIVA["precio_salida"]
+            > OPERACION_ACTIVA["precio_entrada"]
+        )
       else:
-        ganada = s["precio_salida"] < s["precio_entrada"]
+        ganada = (
+            OPERACION_ACTIVA["precio_salida"]
+            < OPERACION_ACTIVA["precio_entrada"]
+        )
 
       if ganada:
-        s["estado"] = "POSI"
+        OPERACION_ACTIVA["estado"] = "POSI"
         GANANCIAS += 1
       else:
-        s["estado"] = "NEGA"
+        OPERACION_ACTIVA["estado"] = "NEGA"
         PERDIDAS += 1
 
-      actualizar_panel = True
+      edit_telegram(PANEL_MESSAGE_ID, construir_mensaje_panel())
+      time.sleep(4)
+      OPERACION_ACTIVA = None
+      return
 
-  if actualizar_panel and PANEL_MESSAGE_ID:
-    nuevo_texto = construir_mensaje_panel(operacion_en_curso)
-    edit_telegram(PANEL_MESSAGE_ID, nuevo_texto)
+  # 2. Evaluar entrada únicamente en los últimos segundos de la vela actual (segundos 52 a 58)
+  if not OPERACION_ACTIVA and 52 <= segundo_actual <= 58:
+    if ULTIMA_MINUTA_EVALUADA != hora_actual_str:
+      direccion = evaluar_entrada_mercado()
+
+      if direccion:
+        ULTIMA_MINUTA_EVALUADA = hora_actual_str
+        hora_entrada = ahora + timedelta(minutes=1)
+        hora_salida = hora_entrada + timedelta(minutes=1)
+
+        OPERACION_ACTIVA = {
+            "hora_entrada": hora_entrada.strftime("%H:%M"),
+            "hora_salida": hora_salida.strftime("%H:%M"),
+            "direccion": direccion,
+            "estado": "EN_CURSO",
+            "precio_entrada": precio_actual,
+            "precio_salida": None,
+        }
+
+        if PANEL_MESSAGE_ID:
+          edit_telegram(PANEL_MESSAGE_ID, construir_mensaje_panel())
+        else:
+          PANEL_MESSAGE_ID = send_telegram(construir_mensaje_panel())
 
 
 # ===== BUCLE PRINCIPAL =====
 if __name__ == "__main__":
   threading.Thread(target=run_health_server, daemon=True).start()
 
-  print(f"--- BOT ANALIZANDO {SYMBOL_DISPLAY} ---", flush=True)
+  print(f"--- BOT FILTRADOR DE ALTA PROBABILIDAD: {SYMBOL_DISPLAY} ---")
 
-  LISTA_SENALES = proyectar_horarios()
-
-  if LISTA_SENALES:
-    msg_inicial = construir_mensaje_panel()
-    PANEL_MESSAGE_ID = send_telegram(msg_inicial)
+  msg_inicial = construir_mensaje_panel()
+  PANEL_MESSAGE_ID = send_telegram(msg_inicial)
 
   while True:
     try:
-      procesar_catalogador()
+      procesar_bot()
     except Exception as e:
       print(f"Error en bucle principal: {e}", flush=True)
 
-    time.sleep(3)
+    time.sleep(2)
+                  
